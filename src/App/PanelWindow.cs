@@ -26,7 +26,12 @@ internal sealed unsafe class PanelWindow
     const uint CmdExit = 3;
 
     const nuint ActivateTimerId = 1;
+    const nuint HoldTimerId = 2;
+    const uint HoldDelayMs = 350;
+    const double HoldZoomFactor = 3.0;
     const nint MK_CONTROL = 0x0008;
+
+    enum PressState { None, Pressed, Dragging, HoldZoom }
 
     static PanelWindow? s_instance;
     static readonly List<HMONITOR> s_monitorScratch = [];
@@ -48,6 +53,11 @@ internal sealed unsafe class PanelWindow
     bool _resizing;
     bool _swallowNextUp;
     HWND _pendingActivate;
+
+    PressState _press;
+    WindowItem? _pressItem;
+    int _pressX, _pressY;
+    double _savedZoom = 1, _savedCenterX = 0.5, _savedCenterY = 0.5;
 
     public PanelWindow(Settings settings) => _settings = settings;
 
@@ -166,7 +176,8 @@ internal sealed unsafe class PanelWindow
                     PInvoke.SetCapture(hwnd);
                     return new LRESULT(0);
                 }
-                break;
+                OnPress(GetXLParam(lParam), GetYLParam(lParam), ((nint)wParam.Value & MK_CONTROL) != 0);
+                return new LRESULT(0);
 
             case PInvoke.WM_MOUSEMOVE:
                 if (_resizing)
@@ -175,15 +186,16 @@ internal sealed unsafe class PanelWindow
                     ResizeToScreenX(screen.X);
                     return new LRESULT(0);
                 }
-                if (((nint)wParam.Value & MK_CONTROL) != 0)
-                    CtrlPan(GetXLParam(lParam), GetYLParam(lParam));
+                OnMove(GetXLParam(lParam), GetYLParam(lParam), ((nint)wParam.Value & MK_CONTROL) != 0);
                 break;
 
             case PInvoke.WM_LBUTTONUP:
+                PInvoke.KillTimer(hwnd, HoldTimerId);
                 if (_swallowNextUp)
                 {
                     // Финальный UP последовательности двойного клика — не одиночный клик.
                     _swallowNextUp = false;
+                    EndPress();
                 }
                 else if (_resizing)
                 {
@@ -191,8 +203,18 @@ internal sealed unsafe class PanelWindow
                     PInvoke.ReleaseCapture();
                     _settings.Save();
                 }
+                else if (_press == PressState.HoldZoom)
+                {
+                    RestoreHoldZoom();
+                    EndPress();
+                }
+                else if (_press == PressState.Dragging)
+                {
+                    EndPress();
+                }
                 else
                 {
+                    EndPress();
                     OnClick(GetXLParam(lParam), GetYLParam(lParam), ((nint)wParam.Value & MK_CONTROL) != 0);
                 }
                 return new LRESULT(0);
@@ -212,10 +234,19 @@ internal sealed unsafe class PanelWindow
                         _pendingActivate = default;
                     }
                 }
+                else if (wParam.Value == HoldTimerId)
+                {
+                    PInvoke.KillTimer(hwnd, HoldTimerId);
+                    BeginHoldZoom();
+                }
                 break;
 
             case PInvoke.WM_CAPTURECHANGED:
                 _resizing = false;
+                if (_press == PressState.HoldZoom)
+                    RestoreHoldZoom();
+                _press = PressState.None;
+                _pressItem = null;
                 break;
 
             case PInvoke.WM_RBUTTONUP:
@@ -379,6 +410,113 @@ internal sealed unsafe class PanelWindow
         return null;
     }
 
+    void OnPress(int x, int y, bool ctrl)
+    {
+        if (HitTest(x, y) is not { } li)
+            return;
+
+        _press = PressState.Pressed;
+        _pressItem = li.Window;
+        _pressX = x;
+        _pressY = y;
+        PInvoke.SetCapture(_hwnd);
+
+        // Удержание на превью (без Ctrl) — временный zoom&pan ×3
+        if (!li.IsStrip && !ctrl && Inside(li.Preview, x, y))
+            PInvoke.SetTimer(_hwnd, HoldTimerId, HoldDelayMs, null);
+    }
+
+    void OnMove(int x, int y, bool ctrl)
+    {
+        switch (_press)
+        {
+            case PressState.Pressed:
+                int threshold = Scale(8);
+                if (Math.Abs(x - _pressX) > threshold || Math.Abs(y - _pressY) > threshold)
+                {
+                    PInvoke.KillTimer(_hwnd, HoldTimerId);
+                    _press = PressState.Dragging;
+                    DragTo(x, y);
+                }
+                break;
+
+            case PressState.Dragging:
+                DragTo(x, y);
+                break;
+
+            case PressState.HoldZoom:
+                if (_pressItem is not null)
+                    SetCenterFromPoint(_pressItem, x, y);
+                break;
+
+            case PressState.None:
+                if (ctrl)
+                    CtrlPan(x, y);
+                break;
+        }
+    }
+
+    void DragTo(int x, int y)
+    {
+        if (_pressItem is null)
+            return;
+        if (HitTest(x, y) is not { } over || over.Window == _pressItem)
+            return;
+        _tracker.Move(_pressItem, _tracker.IndexOf(over.Window));
+    }
+
+    void BeginHoldZoom()
+    {
+        if (_press != PressState.Pressed || _pressItem is null)
+            return;
+
+        _savedZoom = _pressItem.Zoom;
+        _savedCenterX = _pressItem.CenterX;
+        _savedCenterY = _pressItem.CenterY;
+
+        _press = PressState.HoldZoom;
+        _pressItem.Zoom = HoldZoomFactor;
+        var pt = GetCursorClientPos();
+        SetCenterFromPoint(_pressItem, pt.X, pt.Y);
+    }
+
+    void RestoreHoldZoom()
+    {
+        if (_pressItem is null)
+            return;
+        _pressItem.Zoom = _savedZoom;
+        _pressItem.CenterX = _savedCenterX;
+        _pressItem.CenterY = _savedCenterY;
+        PInvoke.InvalidateRect(_hwnd, null, false);
+    }
+
+    void EndPress()
+    {
+        _press = PressState.None;
+        _pressItem = null;
+        PInvoke.ReleaseCapture();
+    }
+
+    /// <summary>Центр видимой области по позиции курсора над превью данного окна.</summary>
+    void SetCenterFromPoint(WindowItem item, int x, int y)
+    {
+        foreach (var li in _layoutItems)
+        {
+            if (li.Window != item || li.IsStrip)
+                continue;
+
+            var fit = LayoutEngine.FitRect(li.Preview, item.Aspect);
+            int w = fit.right - fit.left, h = fit.bottom - fit.top;
+            if (w <= 0 || h <= 0)
+                return;
+
+            item.CenterX = Math.Clamp((x - fit.left) / (double)w, 0, 1);
+            item.CenterY = Math.Clamp((y - fit.top) / (double)h, 0, 1);
+            PInvoke.InvalidateRect(_hwnd, null, false);
+            return;
+        }
+    }
+
     void OnClick(int x, int y, bool ctrl)
     {
         if (HitTest(x, y) is not { } li)
@@ -444,15 +582,7 @@ internal sealed unsafe class PanelWindow
     {
         if (HitTest(x, y) is not { IsStrip: false } li || li.Window.Zoom <= 1.001)
             return;
-
-        var fit = LayoutEngine.FitRect(li.Preview, li.Window.Aspect);
-        int w = fit.right - fit.left, h = fit.bottom - fit.top;
-        if (w <= 0 || h <= 0)
-            return;
-
-        li.Window.CenterX = Math.Clamp((x - fit.left) / (double)w, 0, 1);
-        li.Window.CenterY = Math.Clamp((y - fit.top) / (double)h, 0, 1);
-        PInvoke.InvalidateRect(_hwnd, null, false);
+        SetCenterFromPoint(li.Window, x, y);
     }
 
     System.Drawing.Point GetCursorClientPos()

@@ -154,6 +154,23 @@ internal sealed unsafe class WindowTracker : IDisposable
         }
     }
 
+    /// <summary>Ручное перемещение элемента (drag-reorder).</summary>
+    public void Move(WindowItem item, int newIndex)
+    {
+        int oldIndex = _items.IndexOf(item);
+        if (oldIndex < 0)
+            return;
+        newIndex = Math.Clamp(newIndex, 0, _items.Count - 1);
+        if (newIndex == oldIndex)
+            return;
+
+        _items.RemoveAt(oldIndex);
+        _items.Insert(newIndex, item);
+        Changed?.Invoke();
+    }
+
+    public int IndexOf(WindowItem item) => _items.IndexOf(item);
+
     void TryAdd(HWND hwnd)
     {
         if (_byHwnd.ContainsKey(hwnd) || !IsAppWindow(hwnd))
