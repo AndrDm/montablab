@@ -32,7 +32,7 @@ internal sealed unsafe class PanelWindow
 
     const nuint HoverZoomTimerId = 2;
     const uint HoverZoomDelayMs = 700;
-    const double HoverZoomFactor = 3.0;
+    const double HoverZoomFactor = 5.0;
     const nint MK_CONTROL = 0x0008;
 
     enum PressState { None, Pressed, Dragging, PanelDrag }
@@ -576,7 +576,7 @@ internal sealed unsafe class PanelWindow
         _savedCenterY = candidate.CenterY;
         _hoverZoomItem = candidate;
 
-        // Лупа всегда ровно ×3, независимо от постоянного Ctrl-zoom
+        // Лупа всегда ровно ×5, независимо от постоянного Ctrl-zoom
         candidate.Zoom = HoverZoomFactor;
         PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
         SetCenterFromPoint(candidate, pt.X, pt.Y);
