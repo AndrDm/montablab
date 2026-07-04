@@ -78,6 +78,7 @@ MONITORINFOF_PRIMARY
 // switching
 IsWindow
 keybd_event
+GetKeyState
 
 // interaction timers & double click
 SetTimer

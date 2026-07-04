@@ -25,6 +25,10 @@ internal sealed unsafe class PanelWindow
     const uint CmdDockLeft = 1;
     const uint CmdDockRight = 2;
     const uint CmdExit = 3;
+    const uint CmdAutostart = 4;
+
+    const string AutostartRunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    const string AutostartValue = "montab";
 
     const nuint ActivateTimerId = 1;
     const nuint HoldTimerId = 2;
@@ -186,6 +190,15 @@ internal sealed unsafe class PanelWindow
                         return new LRESULT(1);
                     }
                     if (cur.Y < LayoutEngine.Scale(LayoutEngine.HeaderLogical, _dpi))
+                    {
+                        PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
+                        return new LRESULT(1);
+                    }
+                    // Ctrl над увеличенным превью — режим pan
+                    if ((PInvoke.GetKeyState(0x11 /* VK_CONTROL */) & 0x8000) != 0
+                        && HitTest(cur.X, cur.Y) is { IsStrip: false } hover
+                        && hover.Window.Zoom > 1.001
+                        && Inside(hover.Preview, cur.X, cur.Y))
                     {
                         PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
                         return new LRESULT(1);
@@ -490,6 +503,7 @@ internal sealed unsafe class PanelWindow
                 break;
 
             case PressState.HoldZoom:
+                PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
                 if (_pressItem is not null)
                     SetCenterFromPoint(_pressItem, x, y);
                 break;
@@ -692,6 +706,7 @@ internal sealed unsafe class PanelWindow
     {
         if (HitTest(x, y) is not { IsStrip: false } li || li.Window.Zoom <= 1.001)
             return;
+        PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
         SetCenterFromPoint(li.Window, x, y);
     }
 
@@ -722,8 +737,11 @@ internal sealed unsafe class PanelWindow
         {
             var left = MENU_ITEM_FLAGS.MF_STRING | (_settings.Edge == DockEdge.Left ? MENU_ITEM_FLAGS.MF_CHECKED : 0);
             var right = MENU_ITEM_FLAGS.MF_STRING | (_settings.Edge == DockEdge.Right ? MENU_ITEM_FLAGS.MF_CHECKED : 0);
+            var autostart = MENU_ITEM_FLAGS.MF_STRING | (IsAutostartEnabled() ? MENU_ITEM_FLAGS.MF_CHECKED : 0);
             PInvoke.AppendMenu(menu, left, CmdDockLeft, "Слева");
             PInvoke.AppendMenu(menu, right, CmdDockRight, "Справа");
+            PInvoke.AppendMenu(menu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
+            PInvoke.AppendMenu(menu, autostart, CmdAutostart, "Автозапуск");
             PInvoke.AppendMenu(menu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
             PInvoke.AppendMenu(menu, MENU_ITEM_FLAGS.MF_STRING, CmdExit, "Выход");
 
@@ -743,6 +761,9 @@ internal sealed unsafe class PanelWindow
                 case CmdDockRight:
                     SetEdge(DockEdge.Right);
                     break;
+                case CmdAutostart:
+                    ToggleAutostart();
+                    break;
                 case CmdExit:
                     PInvoke.DestroyWindow(_hwnd);
                     break;
@@ -752,6 +773,21 @@ internal sealed unsafe class PanelWindow
         {
             PInvoke.DestroyMenu(menu);
         }
+    }
+
+    static bool IsAutostartEnabled()
+    {
+        using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(AutostartRunKey);
+        return key?.GetValue(AutostartValue) is string;
+    }
+
+    static void ToggleAutostart()
+    {
+        using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(AutostartRunKey);
+        if (key.GetValue(AutostartValue) is string)
+            key.DeleteValue(AutostartValue, throwOnMissingValue: false);
+        else
+            key.SetValue(AutostartValue, $"\"{Environment.ProcessPath}\"");
     }
 
     void SetEdge(DockEdge edge)
