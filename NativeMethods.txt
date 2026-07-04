@@ -71,6 +71,9 @@ IsWindow
 keybd_event
 GetKeyState
 
+// localization
+GetUserDefaultUILanguage
+
 // interaction timers & double click
 SetTimer
 KillTimer

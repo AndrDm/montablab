@@ -861,12 +861,12 @@ internal sealed unsafe class PanelWindow
             var left = MENU_ITEM_FLAGS.MF_STRING | (_settings.Edge == DockEdge.Left ? MENU_ITEM_FLAGS.MF_CHECKED : 0);
             var right = MENU_ITEM_FLAGS.MF_STRING | (_settings.Edge == DockEdge.Right ? MENU_ITEM_FLAGS.MF_CHECKED : 0);
             var autostart = MENU_ITEM_FLAGS.MF_STRING | (IsAutostartEnabled() ? MENU_ITEM_FLAGS.MF_CHECKED : 0);
-            PInvoke.AppendMenu(menu, left, CmdDockLeft, "Слева");
-            PInvoke.AppendMenu(menu, right, CmdDockRight, "Справа");
+            PInvoke.AppendMenu(menu, left, CmdDockLeft, Strings.DockLeft);
+            PInvoke.AppendMenu(menu, right, CmdDockRight, Strings.DockRight);
             PInvoke.AppendMenu(menu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
-            PInvoke.AppendMenu(menu, autostart, CmdAutostart, "Автозапуск");
+            PInvoke.AppendMenu(menu, autostart, CmdAutostart, Strings.Autostart);
             PInvoke.AppendMenu(menu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
-            PInvoke.AppendMenu(menu, MENU_ITEM_FLAGS.MF_STRING, CmdExit, "Выход");
+            PInvoke.AppendMenu(menu, MENU_ITEM_FLAGS.MF_STRING, CmdExit, Strings.Exit);
 
             PInvoke.GetCursorPos(out System.Drawing.Point pt);
             // Классический трюк: без этого меню у неактивируемого окна не закрывается кликом мимо.
