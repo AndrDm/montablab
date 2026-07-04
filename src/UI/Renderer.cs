@@ -120,12 +120,6 @@ internal sealed unsafe class Renderer : IDisposable
         RECT r = li.Label;
         PInvoke.FillRect(hdc, in r, isActive ? _stripActiveBrush : _stripBrush);
 
-        if (isActive)
-        {
-            var bar = new RECT { left = r.left, top = r.top, right = r.left + LayoutEngine.Scale(3, dpi), bottom = r.bottom };
-            PInvoke.FillRect(hdc, in bar, _accentBrush);
-        }
-
         int iconSize = LayoutEngine.Scale(14, dpi);
         int pad = LayoutEngine.Scale(5, dpi);
         int iconX = r.left + pad;

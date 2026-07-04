@@ -31,12 +31,12 @@ internal sealed unsafe class PanelWindow
     const string AutostartValue = "montab";
 
     const nuint ActivateTimerId = 1;
-    const nuint HoldTimerId = 2;
-    const uint HoldDelayMs = 350;
-    const double HoldZoomFactor = 3.0;
+    const nuint HoverZoomTimerId = 2;
+    const uint HoverZoomDelayMs = 350;
+    const double HoverZoomFactor = 3.0;
     const nint MK_CONTROL = 0x0008;
 
-    enum PressState { None, Pressed, Dragging, HoldZoom, PanelDrag }
+    enum PressState { None, Pressed, Dragging, PanelDrag }
 
     static PanelWindow? s_instance;
     static readonly List<HMONITOR> s_monitorScratch = [];
@@ -64,6 +64,10 @@ internal sealed unsafe class PanelWindow
     WindowItem? _pressItem;
     WindowItem? _hoverClose;
     int _pressX, _pressY;
+
+    // Hover-лупа: наведение на превью без нажатий включает временный zoom+pan
+    WindowItem? _hoverZoomItem;
+    WindowItem? _hoverCandidate;
     double _savedZoom = 1, _savedCenterX = 0.5, _savedCenterY = 0.5;
 
     public PanelWindow(Settings settings) => _settings = settings;
@@ -194,11 +198,11 @@ internal sealed unsafe class PanelWindow
                         PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
                         return new LRESULT(1);
                     }
-                    // Ctrl над увеличенным превью — режим pan
-                    if ((PInvoke.GetKeyState(0x11 /* VK_CONTROL */) & 0x8000) != 0
-                        && HitTest(cur.X, cur.Y) is { IsStrip: false } hover
-                        && hover.Window.Zoom > 1.001
-                        && Inside(hover.Preview, cur.X, cur.Y))
+                    // Активная hover-лупа или Ctrl над увеличенным превью — режим pan
+                    bool ctrlHeld = (PInvoke.GetKeyState(0x11 /* VK_CONTROL */) & 0x8000) != 0;
+                    if (HitTest(cur.X, cur.Y) is { IsStrip: false } hover
+                        && Inside(hover.Preview, cur.X, cur.Y)
+                        && (hover.Window == _hoverZoomItem || (ctrlHeld && hover.Window.Zoom > 1.001)))
                     {
                         PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
                         return new LRESULT(1);
@@ -227,7 +231,6 @@ internal sealed unsafe class PanelWindow
                 break;
 
             case PInvoke.WM_LBUTTONUP:
-                PInvoke.KillTimer(hwnd, HoldTimerId);
                 if (_swallowNextUp)
                 {
                     // Финальный UP последовательности двойного клика — не одиночный клик.
@@ -239,11 +242,6 @@ internal sealed unsafe class PanelWindow
                     _resizing = false;
                     PInvoke.ReleaseCapture();
                     _settings.Save();
-                }
-                else if (_press == PressState.HoldZoom)
-                {
-                    RestoreHoldZoom();
-                    EndPress();
                 }
                 else if (_press == PressState.Dragging)
                 {
@@ -276,14 +274,15 @@ internal sealed unsafe class PanelWindow
                         _pendingActivate = default;
                     }
                 }
-                else if (wParam.Value == HoldTimerId)
+                else if (wParam.Value == HoverZoomTimerId)
                 {
-                    PInvoke.KillTimer(hwnd, HoldTimerId);
-                    BeginHoldZoom();
+                    PInvoke.KillTimer(hwnd, HoverZoomTimerId);
+                    TryBeginHoverZoom();
                 }
                 break;
 
             case PInvoke.WM_MOUSELEAVE:
+                CancelHoverZoom();
                 if (_hoverClose is not null)
                 {
                     _hoverClose = null;
@@ -293,8 +292,6 @@ internal sealed unsafe class PanelWindow
 
             case PInvoke.WM_CAPTURECHANGED:
                 _resizing = false;
-                if (_press == PressState.HoldZoom)
-                    RestoreHoldZoom();
                 _press = PressState.None;
                 _pressItem = null;
                 break;
@@ -440,6 +437,7 @@ internal sealed unsafe class PanelWindow
 
         if (offset == _scrollOffset)
             return;
+        CancelHoverZoom(); // лента уезжает из-под курсора
         _scrollOffset = offset;
         PInvoke.InvalidateRect(_hwnd, null, false);
     }
@@ -471,15 +469,14 @@ internal sealed unsafe class PanelWindow
             return;
         }
 
+        // Клик не должен внезапно включать hover-лупу
+        ClearHoverCandidate();
+
         _press = PressState.Pressed;
         _pressItem = li.Window;
         _pressX = x;
         _pressY = y;
         PInvoke.SetCapture(_hwnd);
-
-        // Удержание на превью (без Ctrl) — временный zoom&pan ×3
-        if (!li.IsStrip && !ctrl && Inside(li.Preview, x, y))
-            PInvoke.SetTimer(_hwnd, HoldTimerId, HoldDelayMs, null);
     }
 
     void OnMove(int x, int y, bool ctrl)
@@ -490,7 +487,7 @@ internal sealed unsafe class PanelWindow
                 int threshold = Scale(8);
                 if (Math.Abs(x - _pressX) > threshold || Math.Abs(y - _pressY) > threshold)
                 {
-                    PInvoke.KillTimer(_hwnd, HoldTimerId);
+                    CancelHoverZoom();
                     _press = PressState.Dragging;
                     PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZENS));
                     DragTo(x, y);
@@ -502,21 +499,109 @@ internal sealed unsafe class PanelWindow
                 DragTo(x, y);
                 break;
 
-            case PressState.HoldZoom:
-                PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
-                if (_pressItem is not null)
-                    SetCenterFromPoint(_pressItem, x, y);
-                break;
-
             case PressState.PanelDrag:
                 PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
                 break;
 
             case PressState.None:
                 if (ctrl)
+                {
+                    ClearHoverCandidate();
                     CtrlPan(x, y);
+                }
+                else
+                {
+                    HoverZoomMove(x, y);
+                }
                 UpdateCloseHover(x, y);
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Hover-лупа: задержка над превью включает временный zoom ×3,
+    /// движение панорамирует, уход с превью — восстановление.
+    /// </summary>
+    void HoverZoomMove(int x, int y)
+    {
+        var over = HitTest(x, y);
+        bool overPreview = over is { IsStrip: false } li && Inside(li.Preview, x, y);
+
+        if (_hoverZoomItem is not null)
+        {
+            if (overPreview && over!.Value.Window == _hoverZoomItem)
+            {
+                PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
+                SetCenterFromPoint(_hoverZoomItem, x, y);
+            }
+            else
+            {
+                CancelHoverZoom();
+            }
+            return;
+        }
+
+        if (overPreview)
+        {
+            var item = over!.Value.Window;
+            if (_hoverCandidate != item)
+            {
+                _hoverCandidate = item;
+                PInvoke.SetTimer(_hwnd, HoverZoomTimerId, HoverZoomDelayMs, null);
+            }
+        }
+        else
+        {
+            ClearHoverCandidate();
+        }
+    }
+
+    void TryBeginHoverZoom()
+    {
+        var candidate = _hoverCandidate;
+        _hoverCandidate = null;
+        if (candidate is null || _press != PressState.None || _hoverZoomItem is not null)
+            return;
+
+        // Мышь всё ещё над этим же превью?
+        var pt = GetCursorClientPos();
+        if (HitTest(pt.X, pt.Y) is not { IsStrip: false } li || li.Window != candidate
+            || !Inside(li.Preview, pt.X, pt.Y))
+        {
+            return;
+        }
+
+        _savedZoom = candidate.Zoom;
+        _savedCenterX = candidate.CenterX;
+        _savedCenterY = candidate.CenterY;
+        _hoverZoomItem = candidate;
+
+        // Поверх постоянного Ctrl-zoom: ×3 от текущего вида
+        candidate.Zoom = Math.Min(_savedZoom * HoverZoomFactor, 15);
+        PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
+        SetCenterFromPoint(candidate, pt.X, pt.Y);
+        PInvoke.InvalidateRect(_hwnd, null, false);
+    }
+
+    void CancelHoverZoom()
+    {
+        ClearHoverCandidate();
+        if (_hoverZoomItem is null)
+            return;
+
+        _hoverZoomItem.Zoom = _savedZoom;
+        _hoverZoomItem.CenterX = _savedCenterX;
+        _hoverZoomItem.CenterY = _savedCenterY;
+        _hoverZoomItem = null;
+        PInvoke.InvalidateRect(_hwnd, null, false);
+    }
+
+    void ClearHoverCandidate()
+    {
+        if (_hoverCandidate is not null)
+        {
+            _hoverCandidate = null;
+            PInvoke.KillTimer(_hwnd, HoverZoomTimerId);
         }
     }
 
@@ -552,32 +637,6 @@ internal sealed unsafe class PanelWindow
         if (HitTest(x, y) is not { } over || over.Window == _pressItem)
             return;
         _tracker.Move(_pressItem, _tracker.IndexOf(over.Window));
-    }
-
-    void BeginHoldZoom()
-    {
-        if (_press != PressState.Pressed || _pressItem is null)
-            return;
-
-        _savedZoom = _pressItem.Zoom;
-        _savedCenterX = _pressItem.CenterX;
-        _savedCenterY = _pressItem.CenterY;
-
-        _press = PressState.HoldZoom;
-        // Поверх постоянного Ctrl-zoom: ×3 от текущего вида
-        _pressItem.Zoom = Math.Min(_savedZoom * HoldZoomFactor, 15);
-        var pt = GetCursorClientPos();
-        SetCenterFromPoint(_pressItem, pt.X, pt.Y);
-    }
-
-    void RestoreHoldZoom()
-    {
-        if (_pressItem is null)
-            return;
-        _pressItem.Zoom = _savedZoom;
-        _pressItem.CenterX = _savedCenterX;
-        _pressItem.CenterY = _savedCenterY;
-        PInvoke.InvalidateRect(_hwnd, null, false);
     }
 
     void EndPress()
@@ -684,6 +743,7 @@ internal sealed unsafe class PanelWindow
     /// <summary>Ctrl+колесо над превью: постоянный zoom ×1..×5.</summary>
     void CtrlZoom(int wheelDelta)
     {
+        CancelHoverZoom(); // ctrl управляет постоянным zoom, лупа не должна мешать
         var pt = GetCursorClientPos();
         if (HitTest(pt.X, pt.Y) is not { IsStrip: false } li || !Inside(li.Preview, pt.X, pt.Y))
             return;
