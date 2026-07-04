@@ -309,6 +309,12 @@ internal sealed unsafe class PanelWindow
                 UpdatePosition();
                 break;
 
+            case PInvoke.WM_ENDSESSION:
+                // Выключение/перезагрузка Windows: WM_DESTROY может не прийти
+                if (wParam.Value != 0)
+                    _settings.Save();
+                break;
+
             case PInvoke.WM_CLOSE:
                 PInvoke.DestroyWindow(hwnd);
                 return new LRESULT(0);
