@@ -14,8 +14,14 @@ namespace Montab.Thumbs;
 internal sealed unsafe class ThumbnailManager(HWND panel) : IDisposable
 {
     readonly HWND _panel = panel;
-    readonly Dictionary<HWND, nint> _thumbs = [];
+    readonly Dictionary<HWND, ThumbState> _thumbs = [];
     readonly HashSet<HWND> _wanted = [];
+
+    struct ThumbState
+    {
+        public nint Thumb;
+        public bool CustomSource; // выставлен rcSource (zoom>1)
+    }
 
     /// <summary>Затенение превью активного окна (255 = непрозрачно).</summary>
     const byte ActiveOpacity = 110;
@@ -34,35 +40,56 @@ internal sealed unsafe class ThumbnailManager(HWND panel) : IDisposable
             HWND source = li.Window.Hwnd;
             _wanted.Add(source);
 
-            if (!_thumbs.TryGetValue(source, out var thumb))
+            bool wantCustomSource = li.Window.Zoom > 1.001;
+
+            if (_thumbs.TryGetValue(source, out var state) && state.CustomSource && !wantCustomSource)
             {
-                if (PInvoke.DwmRegisterThumbnail(_panel, source, out thumb).Failed)
+                // Сбросить rcSource нельзя (флаги DWM только добавляют) — пересоздаём
+                // миниатюру, чтобы DWM снова сам отслеживал размер окна-источника.
+                PInvoke.DwmUnregisterThumbnail(state.Thumb);
+                _thumbs.Remove(source);
+                state = default;
+            }
+
+            if (state.Thumb == 0)
+            {
+                if (PInvoke.DwmRegisterThumbnail(_panel, source, out nint created).Failed)
                     continue;
-                _thumbs[source] = thumb;
+                state = new ThumbState { Thumb = created };
+                _thumbs[source] = state;
             }
 
             var dest = LayoutEngine.FitRect(li.Preview, li.Window.Aspect);
             var props = new DWM_THUMBNAIL_PROPERTIES
             {
-                dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_RECTSOURCE |
-                          PInvoke.DWM_TNP_VISIBLE | PInvoke.DWM_TNP_OPACITY |
-                          PInvoke.DWM_TNP_SOURCECLIENTAREAONLY,
+                // rcSource задаём только при zoom>1: у окна в переходной геометрии
+                // (разворачивание из свёрнутого) GetClientRect даёт «иконик»-полосу,
+                // и приколоченный rcSource показывал бы её до следующего события.
+                dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_VISIBLE |
+                          PInvoke.DWM_TNP_OPACITY | PInvoke.DWM_TNP_SOURCECLIENTAREAONLY |
+                          (wantCustomSource ? PInvoke.DWM_TNP_RECTSOURCE : 0),
                 rcDestination = dest,
-                rcSource = ComputeSourceRect(li.Window),
+                rcSource = wantCustomSource ? ComputeSourceRect(li.Window) : default,
                 opacity = source == activeWindow ? ActiveOpacity : (byte)255,
                 fVisible = true,
                 fSourceClientAreaOnly = true,
             };
-            PInvoke.DwmUpdateThumbnailProperties(thumb, &props);
+            PInvoke.DwmUpdateThumbnailProperties(state.Thumb, &props);
+
+            if (state.CustomSource != wantCustomSource)
+            {
+                state.CustomSource = wantCustomSource;
+                _thumbs[source] = state;
+            }
         }
 
         // Всё, что больше не нужно (полоска, за экраном, окно закрыто) — снять.
         List<HWND>? stale = null;
-        foreach (var (hwnd, thumb) in _thumbs)
+        foreach (var (hwnd, state) in _thumbs)
         {
             if (_wanted.Contains(hwnd))
                 continue;
-            PInvoke.DwmUnregisterThumbnail(thumb);
+            PInvoke.DwmUnregisterThumbnail(state.Thumb);
             (stale ??= []).Add(hwnd);
         }
         if (stale is not null)
@@ -99,8 +126,8 @@ internal sealed unsafe class ThumbnailManager(HWND panel) : IDisposable
 
     public void Dispose()
     {
-        foreach (var thumb in _thumbs.Values)
-            PInvoke.DwmUnregisterThumbnail(thumb);
+        foreach (var state in _thumbs.Values)
+            PInvoke.DwmUnregisterThumbnail(state.Thumb);
         _thumbs.Clear();
     }
 }

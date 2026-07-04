@@ -6,30 +6,65 @@ using Windows.Win32.UI.WindowsAndMessaging;
 namespace Montab.Core;
 
 /// <summary>
-/// Переключение foreground-окон с историей: клик по уже активному окну
-/// возвращает в предыдущее («туда-обратно», как Alt-Tab).
+/// Переключение foreground-окон с MRU-историей активации: клик по уже
+/// активному окну (и фокус после скрытия) идёт в последнее по истории
+/// открытое окно; скрытые в полоску исключаются фильтром.
 /// </summary>
 internal sealed class SwitchController
 {
     const byte VkMenu = 0x12; // VK_MENU (Alt)
+    const int MaxHistory = 32;
 
-    HWND _current;
-    HWND _previous;
+    readonly List<HWND> _history = []; // голова — самое свежее foreground-окно
+
+    /// <summary>Фильтр целей автоперехода (панель исключает полоски: свёрнутые/погашенные).</summary>
+    public Func<HWND, bool>? IsEligibleTarget { get; set; }
+
+    HWND Current => _history.Count > 0 ? _history[0] : default;
 
     public void OnForegroundChanged(HWND hwnd)
     {
-        if (hwnd == _current)
+        if (hwnd == default)
             return;
-        _previous = _current;
-        _current = hwnd;
+        _history.Remove(hwnd);
+        _history.Insert(0, hwnd);
+        if (_history.Count > MaxHistory)
+            _history.RemoveAt(_history.Count - 1);
     }
 
     public void Activate(HWND target)
     {
-        HWND goal = target;
-        if (target == _current && _previous != default && PInvoke.IsWindow(_previous))
-            goal = _previous;
+        if (target == Current)
+        {
+            // Повторный клик по активному — «туда-обратно» по истории
+            ActivateMostRecentExcept(target);
+            return;
+        }
+        ActivateCore(target);
+    }
 
+    /// <summary>Активация без «туда-обратно»-семантики (клик по полоске — всегда в неё).</summary>
+    public void ActivateDirect(HWND target) => ActivateCore(target);
+
+    /// <summary>
+    /// Активирует последнее по истории открытое окно, пропуская указанное,
+    /// закрытые окна и всё, что не проходит фильтр (скрытые полоски).
+    /// </summary>
+    public void ActivateMostRecentExcept(HWND except)
+    {
+        foreach (var hwnd in _history)
+        {
+            if (hwnd == except || !PInvoke.IsWindow(hwnd))
+                continue;
+            if (IsEligibleTarget is { } eligible && !eligible(hwnd))
+                continue;
+            ActivateCore(hwnd);
+            return;
+        }
+    }
+
+    void ActivateCore(HWND goal)
+    {
         if (PInvoke.IsIconic(goal))
             PInvoke.ShowWindow(goal, SHOW_WINDOW_CMD.SW_RESTORE);
 

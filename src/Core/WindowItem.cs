@@ -18,6 +18,9 @@ internal sealed class WindowItem
     /// <summary>Полоска (нижняя секция ленты) — свёрнуто или погашено.</summary>
     public bool IsStrip => IsMinimized || IsCollapsed;
 
+    /// <summary>Момент последнего погашения (защита от мгновенного «оживления» гонками фокуса).</summary>
+    public int CollapsedTick;
+
     /// <summary>Соотношение сторон клиентской области источника (w/h).</summary>
     public double Aspect = 16.0 / 10.0;
 

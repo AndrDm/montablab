@@ -111,8 +111,11 @@ internal sealed unsafe class WindowTracker : IDisposable
                 if (ForegroundWindow != hwnd)
                 {
                     ForegroundWindow = hwnd;
-                    // Погашенное превью оживает при переключении в его окно
-                    if (_byHwnd.TryGetValue(hwnd, out var fg) && fg.IsCollapsed)
+                    // Погашенное превью оживает при переключении в его окно.
+                    // Grace-период: асинхронный фокус от наших же кликов не должен
+                    // мгновенно расскрывать только что погашенное.
+                    if (_byHwnd.TryGetValue(hwnd, out var fg) && fg.IsCollapsed
+                        && Environment.TickCount - fg.CollapsedTick > 1500)
                     {
                         fg.IsCollapsed = false;
                         Reposition(fg);
@@ -220,12 +223,20 @@ internal sealed unsafe class WindowTracker : IDisposable
         _items.Insert(StripBoundary(), item);
     }
 
-    public void ToggleCollapsed(WindowItem item)
+    public void ToggleCollapsed(WindowItem item) => SetCollapsed(item, !item.IsCollapsed);
+
+    public void SetCollapsed(WindowItem item, bool collapsed)
     {
-        item.IsCollapsed = !item.IsCollapsed;
+        if (item.IsCollapsed == collapsed)
+            return;
+        item.IsCollapsed = collapsed;
+        if (collapsed)
+            item.CollapsedTick = Environment.TickCount;
         Reposition(item);
         Changed?.Invoke();
     }
+
+    public bool TryGet(HWND hwnd, out WindowItem item) => _byHwnd.TryGetValue(hwnd, out item!);
 
     void Remove(HWND hwnd)
     {
@@ -242,6 +253,8 @@ internal sealed unsafe class WindowTracker : IDisposable
         if (_byHwnd.TryGetValue(hwnd, out var item) && item.IsMinimized != minimized)
         {
             item.IsMinimized = minimized;
+            if (!minimized)
+                UpdateAspect(item); // к MINIMIZEEND окно уже в финальной геометрии
             Reposition(item);
             Changed?.Invoke();
         }
@@ -265,6 +278,9 @@ internal sealed unsafe class WindowTracker : IDisposable
     /// <summary>true — аспект источника ощутимо изменился.</summary>
     static bool UpdateAspect(WindowItem item)
     {
+        // У свёрнутого окна клиентская область — «иконик»-полоса ~160×28
+        if (PInvoke.IsIconic(item.Hwnd))
+            return false;
         if (!PInvoke.GetClientRect(item.Hwnd, out RECT rc))
             return false;
         int w = rc.right - rc.left, h = rc.bottom - rc.top;
@@ -272,6 +288,9 @@ internal sealed unsafe class WindowTracker : IDisposable
             return false;
 
         double aspect = (double)w / h;
+        // Переходная геометрия разворачивания даёт дикие пропорции — игнорируем
+        if (aspect is < 0.2 or > 4.5)
+            return false;
         if (Math.Abs(aspect - item.Aspect) < 0.01)
             return false;
 

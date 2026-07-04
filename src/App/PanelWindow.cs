@@ -61,7 +61,6 @@ internal sealed unsafe class PanelWindow
     // системный WM_LBUTTONDBLCLK ненадёжен, когда лента перестраивается после первого клика.
     WindowItem? _labelClickItem;
     bool _labelClickWasStrip;
-    HWND _focusBeforeClick;
     int _labelClickTick;
     int _labelClickX, _labelClickY;
     int _closeClickTick;
@@ -122,6 +121,8 @@ internal sealed unsafe class PanelWindow
         _thumbs = new ThumbnailManager(_hwnd);
         _tracker.Changed += OnTrackerChanged;
         _tracker.ForegroundChanged += _switch.OnForegroundChanged;
+        // Автопереходы по истории не идут в скрытые полоски
+        _switch.IsEligibleTarget = hwnd => _tracker.TryGet(hwnd, out var item) && !item.IsStrip;
         _tracker.Start();
         _switch.OnForegroundChanged(_tracker.ForegroundWindow);
     }
@@ -727,14 +728,14 @@ internal sealed unsafe class PanelWindow
         {
             _labelClickItem = null;
 
-            // Первый клик уже активировал окно (и развернул/оживил превью) —
-            // возвращаем фокус туда, где пользователь был.
-            if (_focusBeforeClick != default && PInvoke.IsWindow(_focusBeforeClick))
-                _switch.Activate(_focusBeforeClick);
-
             // Для живого тайла двойной клик — «свернуть превью в полоску»
             if (!_labelClickWasStrip)
                 _tracker.ToggleCollapsed(prev);
+
+            // Фокус — в последнее по истории открытое окно; сам элемент и все
+            // скрытые исключаются (фильтр IsEligibleTarget), иначе серия
+            // «скрыть несколько подряд» скачет по только что скрытым окнам.
+            _switch.ActivateMostRecentExcept(prev.Hwnd);
             return;
         }
 
@@ -744,8 +745,18 @@ internal sealed unsafe class PanelWindow
         _labelClickTick = Environment.TickCount;
         _labelClickX = x;
         _labelClickY = y;
-        _focusBeforeClick = PInvoke.GetForegroundWindow();
-        _switch.Activate(li.Window.Hwnd);
+
+        if (li.IsStrip)
+        {
+            // Явный клик по полоске всегда оживляет превью (не ждём foreground-хук
+            // с его grace-периодом) и всегда идёт «в неё», без toggle-back.
+            _tracker.SetCollapsed(li.Window, false);
+            _switch.ActivateDirect(li.Window.Hwnd);
+        }
+        else
+        {
+            _switch.Activate(li.Window.Hwnd);
+        }
     }
 
     /// <summary>Второй клик того же жеста: в пределах double-click-времени (с запасом) и рядом.</summary>
