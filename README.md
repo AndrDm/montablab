@@ -31,6 +31,42 @@
 | Перетаскивание внутреннего края | Ширина панели (3–20% ширины монитора) |
 | Правый клик | Меню: край дока, автозапуск, выход |
 
+## Браузер замирает в превью?
+
+Chromium-браузеры (Chrome, Brave, Edge) отслеживают перекрытие своего окна
+(«native window occlusion»): как только окно полностью закрыто другими,
+браузер перестаёт рендерить кадры — звук играет, а превью в панели замирает
+на последнем кадре. Это не ограничение montab: DWM показывает только то, что
+приложение само отрисовало.
+
+Лечится штатной политикой браузера — выполните в PowerShell **одну** команду
+под свой браузер и перезапустите его:
+
+```powershell
+# Brave
+New-Item 'HKCU:\Software\Policies\BraveSoftware\Brave' -Force |
+  Set-ItemProperty -Name NativeWindowOcclusionEnabled -Value 0 -Type DWord
+
+# Chrome
+New-Item 'HKCU:\Software\Policies\Google\Chrome' -Force |
+  Set-ItemProperty -Name NativeWindowOcclusionEnabled -Value 0 -Type DWord
+
+# Edge
+New-Item 'HKCU:\Software\Policies\Microsoft\Edge' -Force |
+  Set-ItemProperty -Name NativeWindowOcclusionEnabled -Value 0 -Type DWord
+```
+
+Проверить, что политика применилась: `brave://policy` (или `chrome://policy`,
+`edge://policy`) — там должна появиться `NativeWindowOcclusionEnabled: 0`.
+Откат — удалить значение:
+`Remove-ItemProperty 'HKCU:\Software\Policies\BraveSoftware\Brave' -Name NativeWindowOcclusionEnabled`.
+
+Альтернатива без реестра — ключи в ярлыке браузера:
+`--disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows`.
+
+Цена: полностью перекрытый браузер продолжает тратить GPU/CPU на отрисовку.
+На свёрнутые окна не влияет (они в панели и так полоски).
+
 ## Сборка
 
 Требуется .NET 11 SDK (сейчас — preview 5+) и MSVC (для NativeAOT-линковки). Windows 10 1809+.
