@@ -32,8 +32,8 @@ internal sealed unsafe class PanelWindow
 
     const nuint ActivateTimerId = 1;
     const nuint HoverZoomTimerId = 2;
-    /// <summary>Окно ожидания второго клика по заголовку живого тайла.</summary>
-    const uint LabelActivateDelayMs = 300;
+    /// <summary>Окно ожидания второго клика по живому тайлу.</summary>
+    const uint LabelActivateDelayMs = 200;
     const uint HoverZoomDelayMs = 700;
     const double HoverZoomFactor = 5.0;
     const nint MK_CONTROL = 0x0008;
@@ -62,10 +62,7 @@ internal sealed unsafe class PanelWindow
 
     // Двойной клик детектируем сами: системный WM_LBUTTONDBLCLK ненадёжен,
     // когда лента перестраивается после первого клика.
-    WindowItem? _pendingLabelItem; // заголовок живого тайла ждёт активации по таймеру
-    WindowItem? _labelClickItem;   // последняя кликнутая полоска (для «вернуть фокус» вторым кликом)
-    int _labelClickTick;
-    int _labelClickX, _labelClickY;
+    WindowItem? _pendingLabelItem; // живой тайл ждёт активации по таймеру
     int _closeClickTick;
     int _closeClickX, _closeClickY;
 
@@ -713,10 +710,7 @@ internal sealed unsafe class PanelWindow
     void OnClick(int x, int y, bool ctrl)
     {
         if (HitTest(x, y) is not { } li)
-        {
-            _labelClickItem = null;
             return;
-        }
 
         if (Inside(LayoutEngine.CloseRect(li.Label), x, y))
         {
@@ -739,16 +733,6 @@ internal sealed unsafe class PanelWindow
             return;
         }
 
-        // Полоска: второй клик подряд возвращает фокус по истории — первый уже
-        // развернул окно и оживил превью (элемент первого клика запомнен: лента
-        // могла перестроиться, и под курсором уже другой элемент).
-        if (_labelClickItem is { } prev && IsRepeatClick(_labelClickTick, _labelClickX, _labelClickY, x, y))
-        {
-            _labelClickItem = null;
-            _switch.ActivateMostRecentExcept(prev.Hwnd);
-            return;
-        }
-
         if (!li.IsStrip)
         {
             // Живой тайл (превью или заголовок): короткое окно ожидания второго
@@ -768,11 +752,8 @@ internal sealed unsafe class PanelWindow
             return;
         }
 
-        // Полоска: мгновенно оживить превью и переключиться «в неё», без toggle-back
-        _labelClickItem = li.Window;
-        _labelClickTick = Environment.TickCount;
-        _labelClickX = x;
-        _labelClickY = y;
+        // Полоска: мгновенно оживить превью и переключиться. Второй клик двойного
+        // попадёт сюда же и ничего не изменит — одинарный и двойной эквивалентны.
         _tracker.SetCollapsed(li.Window, false);
         _switch.Activate(li.Window.Hwnd);
     }
