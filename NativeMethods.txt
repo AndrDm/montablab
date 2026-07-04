@@ -72,6 +72,10 @@ EnumDisplayMonitors
 GetDpiForWindow
 MONITORINFOF_PRIMARY
 
+// switching
+IsWindow
+keybd_event
+
 // window tracking
 SetWinEventHook
 UnhookWinEvent

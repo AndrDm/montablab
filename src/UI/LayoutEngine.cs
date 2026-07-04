@@ -11,8 +11,8 @@ internal readonly record struct LayoutItem(WindowItem Window, RECT Bounds, RECT 
 /// </summary>
 internal sealed class LayoutEngine
 {
-    const int StripHeightLogical = 28;
-    const int LabelHeightLogical = 22;
+    const int StripHeightLogical = 22;
+    const int LabelHeightLogical = 18;
     const int GapLogical = 6;
     const int PaddingLogical = 8;
     const int MinPreviewHeightLogical = 48;

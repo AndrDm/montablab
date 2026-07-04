@@ -104,8 +104,8 @@ internal sealed unsafe class Renderer : IDisposable
             PInvoke.FillRect(hdc, in bar, _accentBrush);
         }
 
-        int iconSize = LayoutEngine.Scale(16, dpi);
-        int pad = LayoutEngine.Scale(6, dpi);
+        int iconSize = LayoutEngine.Scale(14, dpi);
+        int pad = LayoutEngine.Scale(5, dpi);
         int iconX = r.left + pad;
         int iconY = r.top + (r.bottom - r.top - iconSize) / 2;
 
@@ -140,7 +140,7 @@ internal sealed unsafe class Renderer : IDisposable
             PInvoke.DeleteObject((HGDIOBJ)_font.Value);
 
         _font = PInvoke.CreateFont(
-            -LayoutEngine.Scale(12, dpi), 0, 0, 0,
+            -LayoutEngine.Scale(10, dpi), 0, 0, 0,
             400 /* FW_NORMAL */, 0, 0, 0,
             FONT_CHARSET.DEFAULT_CHARSET,
             FONT_OUTPUT_PRECISION.OUT_DEFAULT_PRECIS,

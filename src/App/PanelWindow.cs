@@ -30,6 +30,7 @@ internal sealed unsafe class PanelWindow
 
     readonly Settings _settings;
     readonly WindowTracker _tracker = new();
+    readonly SwitchController _switch = new();
     readonly LayoutEngine _layout = new();
     readonly Renderer _renderer = new();
     List<LayoutItem> _layoutItems = [];
@@ -86,7 +87,9 @@ internal sealed unsafe class PanelWindow
 
         _thumbs = new ThumbnailManager(_hwnd);
         _tracker.Changed += OnTrackerChanged;
+        _tracker.ForegroundChanged += _switch.OnForegroundChanged;
         _tracker.Start();
+        _switch.OnForegroundChanged(_tracker.ForegroundWindow);
     }
 
     void OnTrackerChanged() => PInvoke.InvalidateRect(_hwnd, null, false);
@@ -160,9 +163,14 @@ internal sealed unsafe class PanelWindow
                     _resizing = false;
                     PInvoke.ReleaseCapture();
                     _settings.Save();
-                    return new LRESULT(0);
                 }
-                break;
+                else
+                {
+                    var hit = HitTest(GetXLParam(lParam), GetYLParam(lParam));
+                    if (hit is not null)
+                        _switch.Activate(hit.Hwnd);
+                }
+                return new LRESULT(0);
 
             case PInvoke.WM_CAPTURECHANGED:
                 _resizing = false;
@@ -295,6 +303,21 @@ internal sealed unsafe class PanelWindow
     int Scale(int logicalPx) => (int)(logicalPx * _dpi / 96.0);
 
     static int GetXLParam(LPARAM lParam) => (short)(lParam.Value & 0xFFFF);
+
+    static int GetYLParam(LPARAM lParam) => (short)((lParam.Value >> 16) & 0xFFFF);
+
+    WindowItem? HitTest(int x, int y)
+    {
+        foreach (var li in _layoutItems)
+        {
+            if (x >= li.Bounds.left && x < li.Bounds.right &&
+                y >= li.Bounds.top && y < li.Bounds.bottom)
+            {
+                return li.Window;
+            }
+        }
+        return null;
+    }
 
     System.Drawing.Point GetCursorClientPos()
     {

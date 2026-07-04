@@ -29,6 +29,9 @@ internal sealed unsafe class WindowTracker : IDisposable
     /// <summary>Что-то в списке/состоянии изменилось — нужен relayout+repaint.</summary>
     public event Action? Changed;
 
+    /// <summary>Сменилось foreground-окно (для истории переключений).</summary>
+    public event Action<HWND>? ForegroundChanged;
+
     public void Start()
     {
         s_instance = this;
@@ -99,6 +102,7 @@ internal sealed unsafe class WindowTracker : IDisposable
                 if (ForegroundWindow != hwnd)
                 {
                     ForegroundWindow = hwnd;
+                    ForegroundChanged?.Invoke(hwnd);
                     Changed?.Invoke();
                 }
                 break;
