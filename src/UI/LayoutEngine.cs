@@ -11,6 +11,9 @@ internal readonly record struct LayoutItem(WindowItem Window, RECT Bounds, RECT 
 /// </summary>
 internal sealed class LayoutEngine
 {
+    /// <summary>Высота «ручки» сверху панели — за неё панель перетаскивают на другой монитор/край.</summary>
+    public const int HeaderLogical = 14;
+
     const int StripHeightLogical = 22;
     const int LabelHeightLogical = 18;
     const int GapLogical = 6;
@@ -35,7 +38,7 @@ internal sealed class LayoutEngine
             return result;
 
         int left = client.left + padding;
-        int y = padding - scrollOffset;
+        int y = Scale(HeaderLogical, dpi) + padding - scrollOffset;
 
         foreach (var item in items)
         {
@@ -89,6 +92,13 @@ internal sealed class LayoutEngine
         int x = cell.left + (cellW - w) / 2;
         int y = cell.top + (cellH - h) / 2;
         return new RECT { left = x, top = y, right = x + w, bottom = y + h };
+    }
+
+    /// <summary>Квадратная зона крестика закрытия у правого края подписи.</summary>
+    public static RECT CloseRect(RECT label)
+    {
+        int size = label.bottom - label.top;
+        return new RECT { left = label.right - size, top = label.top, right = label.right, bottom = label.bottom };
     }
 
     public static int Scale(int logical, uint dpi) => (int)(logical * dpi / 96.0);

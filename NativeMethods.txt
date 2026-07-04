@@ -8,6 +8,7 @@ GetMessageW
 TranslateMessage
 DispatchMessageW
 PostQuitMessage
+PostMessageW
 RegisterWindowMessageW
 GetModuleHandleW
 SetWindowPos
@@ -55,6 +56,8 @@ LoadCursorW
 SetCursor
 IDC_ARROW
 IDC_SIZEWE
+IDC_SIZENS
+IDC_SIZEALL
 IDC_HAND
 
 // context menu
@@ -82,6 +85,8 @@ KillTimer
 GetDoubleClickTime
 WM_TIMER
 WM_LBUTTONDBLCLK
+TrackMouseEvent
+WM_MOUSELEAVE
 
 // window tracking
 SetWinEventHook

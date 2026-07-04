@@ -8,6 +8,7 @@ using Montab.UI;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Gdi;
+using Windows.Win32.UI.Input.KeyboardAndMouse;
 using Windows.Win32.UI.WindowsAndMessaging;
 
 namespace Montab.App;
@@ -31,11 +32,12 @@ internal sealed unsafe class PanelWindow
     const double HoldZoomFactor = 3.0;
     const nint MK_CONTROL = 0x0008;
 
-    enum PressState { None, Pressed, Dragging, HoldZoom }
+    enum PressState { None, Pressed, Dragging, HoldZoom, PanelDrag }
 
     static PanelWindow? s_instance;
     static readonly List<HMONITOR> s_monitorScratch = [];
     static readonly HWND TopmostAnchor = new(-1); // HWND_TOPMOST
+    static readonly HWND BottomAnchor = new(1);   // HWND_BOTTOM
 
     readonly Settings _settings;
     readonly WindowTracker _tracker = new();
@@ -56,6 +58,7 @@ internal sealed unsafe class PanelWindow
 
     PressState _press;
     WindowItem? _pressItem;
+    WindowItem? _hoverClose;
     int _pressX, _pressY;
     double _savedZoom = 1, _savedCenterX = 0.5, _savedCenterY = 0.5;
 
@@ -130,8 +133,20 @@ internal sealed unsafe class PanelWindow
     {
         if (_appBar is not null && msg == _appBar.CallbackMessage)
         {
-            if ((uint)wParam.Value == PInvoke.ABN_POSCHANGED)
-                UpdatePosition();
+            switch ((uint)wParam.Value)
+            {
+                case PInvoke.ABN_POSCHANGED:
+                    UpdatePosition();
+                    break;
+                case PInvoke.ABN_FULLSCREENAPP:
+                    // Полноэкранное приложение: уходим вниз z-order, потом возвращаемся.
+                    bool fullscreen = lParam.Value != 0;
+                    PInvoke.SetWindowPos(_hwnd, fullscreen ? BottomAnchor : TopmostAnchor,
+                        0, 0, 0, 0,
+                        SET_WINDOW_POS_FLAGS.SWP_NOMOVE | SET_WINDOW_POS_FLAGS.SWP_NOSIZE |
+                        SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
+                    break;
+            }
             return new LRESULT(0);
         }
 
@@ -147,7 +162,7 @@ internal sealed unsafe class PanelWindow
                     _layoutItems = _layout.Compute(_tracker.Items, client, _dpi, _scrollOffset);
                 }
                 _thumbs?.Sync(_layoutItems, client, _tracker.ForegroundWindow);
-                _renderer.Paint(hwnd, _layoutItems, _tracker.ForegroundWindow, _dpi);
+                _renderer.Paint(hwnd, _layoutItems, _tracker.ForegroundWindow, _dpi, _hoverClose);
                 return new LRESULT(0);
 
             case PInvoke.WM_MOUSEWHEEL:
@@ -162,10 +177,19 @@ internal sealed unsafe class PanelWindow
                 return new LRESULT(1); // всё рисуется в WM_PAINT с двойным буфером
 
             case PInvoke.WM_SETCURSOR:
-                if ((lParam.Value & 0xFFFF) == PInvoke.HTCLIENT && IsInGrip(GetCursorClientPos().X))
+                if ((lParam.Value & 0xFFFF) == PInvoke.HTCLIENT)
                 {
-                    PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEWE));
-                    return new LRESULT(1);
+                    var cur = GetCursorClientPos();
+                    if (IsInGrip(cur.X))
+                    {
+                        PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEWE));
+                        return new LRESULT(1);
+                    }
+                    if (cur.Y < LayoutEngine.Scale(LayoutEngine.HeaderLogical, _dpi))
+                    {
+                        PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
+                        return new LRESULT(1);
+                    }
                 }
                 break;
 
@@ -212,6 +236,11 @@ internal sealed unsafe class PanelWindow
                 {
                     EndPress();
                 }
+                else if (_press == PressState.PanelDrag)
+                {
+                    EndPress();
+                    DropPanel();
+                }
                 else
                 {
                     EndPress();
@@ -238,6 +267,14 @@ internal sealed unsafe class PanelWindow
                 {
                     PInvoke.KillTimer(hwnd, HoldTimerId);
                     BeginHoldZoom();
+                }
+                break;
+
+            case PInvoke.WM_MOUSELEAVE:
+                if (_hoverClose is not null)
+                {
+                    _hoverClose = null;
+                    PInvoke.InvalidateRect(hwnd, null, false);
                 }
                 break;
 
@@ -412,8 +449,14 @@ internal sealed unsafe class PanelWindow
 
     void OnPress(int x, int y, bool ctrl)
     {
-        if (HitTest(x, y) is not { } li)
+        // «Ручка» сверху или пустая зона — перетаскивание всей панели
+        if (y < LayoutEngine.Scale(LayoutEngine.HeaderLogical, _dpi) || HitTest(x, y) is not { } li)
+        {
+            _press = PressState.PanelDrag;
+            PInvoke.SetCapture(_hwnd);
+            PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
             return;
+        }
 
         _press = PressState.Pressed;
         _pressItem = li.Window;
@@ -436,11 +479,13 @@ internal sealed unsafe class PanelWindow
                 {
                     PInvoke.KillTimer(_hwnd, HoldTimerId);
                     _press = PressState.Dragging;
+                    PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZENS));
                     DragTo(x, y);
                 }
                 break;
 
             case PressState.Dragging:
+                PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZENS));
                 DragTo(x, y);
                 break;
 
@@ -449,10 +494,40 @@ internal sealed unsafe class PanelWindow
                     SetCenterFromPoint(_pressItem, x, y);
                 break;
 
+            case PressState.PanelDrag:
+                PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
+                break;
+
             case PressState.None:
                 if (ctrl)
                     CtrlPan(x, y);
+                UpdateCloseHover(x, y);
                 break;
+        }
+    }
+
+    void UpdateCloseHover(int x, int y)
+    {
+        WindowItem? hover = null;
+        if (HitTest(x, y) is { } li && Inside(LayoutEngine.CloseRect(li.Label), x, y))
+            hover = li.Window;
+
+        if (hover != _hoverClose)
+        {
+            _hoverClose = hover;
+            PInvoke.InvalidateRect(_hwnd, null, false);
+        }
+
+        if (hover is not null)
+        {
+            // Иначе не узнаем, что мышь ушла с панели, и крестик останется подсвеченным
+            var tme = new TRACKMOUSEEVENT
+            {
+                cbSize = (uint)sizeof(TRACKMOUSEEVENT),
+                dwFlags = TRACKMOUSEEVENT_FLAGS.TME_LEAVE,
+                hwndTrack = _hwnd,
+            };
+            PInvoke.TrackMouseEvent(ref tme);
         }
     }
 
@@ -475,7 +550,8 @@ internal sealed unsafe class PanelWindow
         _savedCenterY = _pressItem.CenterY;
 
         _press = PressState.HoldZoom;
-        _pressItem.Zoom = HoldZoomFactor;
+        // Поверх постоянного Ctrl-zoom: ×3 от текущего вида
+        _pressItem.Zoom = Math.Min(_savedZoom * HoldZoomFactor, 15);
         var pt = GetCursorClientPos();
         SetCenterFromPoint(_pressItem, pt.X, pt.Y);
     }
@@ -495,6 +571,30 @@ internal sealed unsafe class PanelWindow
         _press = PressState.None;
         _pressItem = null;
         PInvoke.ReleaseCapture();
+    }
+
+    /// <summary>Бросок панели: монитор под курсором, край — по половине монитора.</summary>
+    unsafe void DropPanel()
+    {
+        PInvoke.GetCursorPos(out System.Drawing.Point pt);
+        var hMonitor = PInvoke.MonitorFromPoint(pt, MONITOR_FROM_FLAGS.MONITOR_DEFAULTTONEAREST);
+
+        MONITORINFOEXW mi = default;
+        mi.monitorInfo.cbSize = (uint)sizeof(MONITORINFOEXW);
+        if (!PInvoke.GetMonitorInfo(hMonitor, (MONITORINFO*)&mi))
+            return;
+
+        var mon = mi.monitorInfo.rcMonitor;
+        var edge = pt.X < (mon.left + mon.right) / 2 ? DockEdge.Left : DockEdge.Right;
+        string device = mi.szDevice.ToString();
+
+        if (device == _settings.Monitor && edge == _settings.Edge)
+            return;
+
+        _settings.Monitor = device;
+        _settings.Edge = edge;
+        UpdatePosition();
+        _settings.Save();
     }
 
     /// <summary>Центр видимой области по позиции курсора над превью данного окна.</summary>
@@ -522,6 +622,12 @@ internal sealed unsafe class PanelWindow
         if (HitTest(x, y) is not { } li)
             return;
 
+        if (Inside(LayoutEngine.CloseRect(li.Label), x, y))
+        {
+            PInvoke.PostMessage(li.Window.Hwnd, PInvoke.WM_CLOSE, default, default);
+            return;
+        }
+
         if (ctrl)
         {
             // Ctrl+клик — сброс zoom&pan этого превью
@@ -548,6 +654,10 @@ internal sealed unsafe class PanelWindow
         _pendingActivate = default;
 
         if (HitTest(x, y) is not { } li)
+            return;
+
+        // Двойной клик по крестику — не сворачивание (первый клик уже закрыл окно)
+        if (Inside(LayoutEngine.CloseRect(li.Label), x, y))
             return;
 
         if (li.IsStrip || Inside(li.Label, x, y))
