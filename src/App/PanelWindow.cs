@@ -576,8 +576,8 @@ internal sealed unsafe class PanelWindow
         _savedCenterY = candidate.CenterY;
         _hoverZoomItem = candidate;
 
-        // Поверх постоянного Ctrl-zoom: ×3 от текущего вида
-        candidate.Zoom = Math.Min(_savedZoom * HoverZoomFactor, 15);
+        // Лупа всегда ровно ×3, независимо от постоянного Ctrl-zoom
+        candidate.Zoom = HoverZoomFactor;
         PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
         SetCenterFromPoint(candidate, pt.X, pt.Y);
         PInvoke.InvalidateRect(_hwnd, null, false);
