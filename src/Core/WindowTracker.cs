@@ -49,14 +49,14 @@ internal sealed unsafe class WindowTracker : IDisposable
         s_enumScratch.Clear();
         PInvoke.EnumWindows(&EnumWindowsProc, default);
         // EnumWindows идёт сверху z-order («новые сверху»); лента двухсекционная:
-        // активные превью вверху, полоски (свёрнутые/погашенные) внизу.
+        // живые превью вверху, свёрнутые полоски внизу.
         var strips = new List<WindowItem>();
         foreach (var hwnd in s_enumScratch)
         {
             if (!IsAppWindow(hwnd))
                 continue;
             var item = CreateItem(hwnd);
-            if (item.IsStrip)
+            if (item.IsMinimized)
                 strips.Add(item);
             else
                 _items.Add(item);
@@ -111,15 +111,6 @@ internal sealed unsafe class WindowTracker : IDisposable
                 if (ForegroundWindow != hwnd)
                 {
                     ForegroundWindow = hwnd;
-                    // Погашенное превью оживает при переключении в его окно.
-                    // Grace-период: асинхронный фокус от наших же кликов не должен
-                    // мгновенно расскрывать только что погашенное.
-                    if (_byHwnd.TryGetValue(hwnd, out var fg) && fg.IsCollapsed
-                        && Environment.TickCount - fg.CollapsedTick > 1500)
-                    {
-                        fg.IsCollapsed = false;
-                        Reposition(fg);
-                    }
                     ForegroundChanged?.Invoke(hwnd);
                     Changed?.Invoke();
                 }
@@ -195,18 +186,18 @@ internal sealed unsafe class WindowTracker : IDisposable
             return;
 
         var item = CreateItem(hwnd);
-        // Новые активные — сверху; новые свёрнутые — первыми среди полосок
-        _items.Insert(item.IsStrip ? StripBoundary() : 0, item);
+        // Новые живые — сверху; новые свёрнутые — первыми среди полосок
+        _items.Insert(item.IsMinimized ? StripBoundary() : 0, item);
         _byHwnd[hwnd] = item;
         Changed?.Invoke();
     }
 
-    /// <summary>Индекс первой полоски — граница секций «активные/неактивные».</summary>
+    /// <summary>Индекс первой полоски — граница секций «живые/свёрнутые».</summary>
     int StripBoundary()
     {
         for (int i = 0; i < _items.Count; i++)
         {
-            if (_items[i].IsStrip)
+            if (_items[i].IsMinimized)
                 return i;
         }
         return _items.Count;
@@ -221,17 +212,6 @@ internal sealed unsafe class WindowTracker : IDisposable
         if (!_items.Remove(item))
             return;
         _items.Insert(StripBoundary(), item);
-    }
-
-    public void SetCollapsed(WindowItem item, bool collapsed)
-    {
-        if (item.IsCollapsed == collapsed)
-            return;
-        item.IsCollapsed = collapsed;
-        if (collapsed)
-            item.CollapsedTick = Environment.TickCount;
-        Reposition(item);
-        Changed?.Invoke();
     }
 
     public bool TryGet(HWND hwnd, out WindowItem item) => _byHwnd.TryGetValue(hwnd, out item!);

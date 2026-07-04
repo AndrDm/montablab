@@ -45,20 +45,29 @@ internal sealed unsafe class PanelWindow
     static readonly HWND TopmostAnchor = new(-1); // HWND_TOPMOST
     static readonly HWND BottomAnchor = new(1);   // HWND_BOTTOM
 
+    // Системные курсоры разделяемые — загружаются один раз, не освобождаются
+    static readonly HCURSOR ArrowCursor = PInvoke.LoadCursor(default, PInvoke.IDC_ARROW);
+    static readonly HCURSOR SizeWECursor = PInvoke.LoadCursor(default, PInvoke.IDC_SIZEWE);
+    static readonly HCURSOR SizeNSCursor = PInvoke.LoadCursor(default, PInvoke.IDC_SIZENS);
+    static readonly HCURSOR SizeAllCursor = PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL);
+
     readonly Settings _settings;
     readonly WindowTracker _tracker = new();
     readonly SwitchController _switch = new();
     readonly LayoutEngine _layout = new();
     readonly Renderer _renderer = new();
-    List<LayoutItem> _layoutItems = [];
+    IReadOnlyList<LayoutItem> _layoutItems = [];
     int _scrollOffset;
 
     HWND _hwnd;
     AppBar? _appBar;
     ThumbnailManager? _thumbs;
-    uint _dpi = 96;
     bool _updatingPosition;
     bool _resizing;
+
+    // Предвычисленные размеры на текущий DPI
+    uint _dpi = 96;
+    int _gripPx, _headerPx, _dragThresholdPx, _repeatRadiusPx, _wheelStepPx;
 
     // Двойной клик детектируем сами: системный WM_LBUTTONDBLCLK ненадёжен,
     // когда лента перестраивается после первого клика.
@@ -94,8 +103,8 @@ internal sealed unsafe class PanelWindow
                 style = WNDCLASS_STYLES.CS_HREDRAW | WNDCLASS_STYLES.CS_VREDRAW,
                 lpfnWndProc = &StaticWndProc,
                 hInstance = (HINSTANCE)hInstance.Value,
-                hCursor = PInvoke.LoadCursor(default, PInvoke.IDC_ARROW),
-                hbrBackground = PInvoke.CreateSolidBrush(new COLORREF(0x001E1E1E)),
+                hCursor = ArrowCursor,
+                // hbrBackground не нужен: WM_ERASEBKGND подавлен, весь фон рисует Renderer
                 lpszClassName = className,
             };
             if (PInvoke.RegisterClassEx(&wc) == 0)
@@ -113,7 +122,7 @@ internal sealed unsafe class PanelWindow
         if (_hwnd == default)
             throw new InvalidOperationException("CreateWindowExW failed");
 
-        _dpi = PInvoke.GetDpiForWindow(_hwnd);
+        SetDpi(PInvoke.GetDpiForWindow(_hwnd));
         _appBar = new AppBar(_hwnd, PInvoke.RegisterWindowMessage("montab.appbar"));
         _appBar.Register();
         UpdatePosition();
@@ -122,8 +131,8 @@ internal sealed unsafe class PanelWindow
         _thumbs = new ThumbnailManager(_hwnd);
         _tracker.Changed += OnTrackerChanged;
         _tracker.ForegroundChanged += _switch.OnForegroundChanged;
-        // Автопереходы по истории не идут в скрытые полоски
-        _switch.IsEligibleTarget = hwnd => _tracker.TryGet(hwnd, out var item) && !item.IsStrip;
+        // Автопереходы по истории не идут в свёрнутые окна
+        _switch.IsEligibleTarget = hwnd => _tracker.TryGet(hwnd, out var item) && !item.IsMinimized;
         _tracker.Start();
         _switch.OnForegroundChanged(_tracker.ForegroundWindow);
     }
@@ -200,12 +209,12 @@ internal sealed unsafe class PanelWindow
                     var cur = GetCursorClientPos();
                     if (IsInGrip(cur.X))
                     {
-                        PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEWE));
+                        PInvoke.SetCursor(SizeWECursor);
                         return new LRESULT(1);
                     }
-                    if (cur.Y < LayoutEngine.Scale(LayoutEngine.HeaderLogical, _dpi))
+                    if (cur.Y < _headerPx)
                     {
-                        PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
+                        PInvoke.SetCursor(SizeAllCursor);
                         return new LRESULT(1);
                     }
                     // Активная hover-лупа или Ctrl над увеличенным превью — режим pan
@@ -214,7 +223,7 @@ internal sealed unsafe class PanelWindow
                         && Inside(hover.Preview, cur.X, cur.Y)
                         && (hover.Window == _hoverZoomItem || (ctrlHeld && hover.Window.Zoom > 1.001)))
                     {
-                        PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
+                        PInvoke.SetCursor(SizeAllCursor);
                         return new LRESULT(1);
                     }
                 }
@@ -308,7 +317,7 @@ internal sealed unsafe class PanelWindow
                 return new LRESULT(0);
 
             case PInvoke.WM_DPICHANGED:
-                _dpi = (uint)(wParam.Value & 0xFFFF);
+                SetDpi((uint)(wParam.Value & 0xFFFF));
                 UpdatePosition();
                 return new LRESULT(0);
 
@@ -362,7 +371,7 @@ internal sealed unsafe class PanelWindow
             PInvoke.SetWindowPos(_hwnd, TopmostAnchor,
                 rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
                 SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
-            _dpi = PInvoke.GetDpiForWindow(_hwnd);
+            SetDpi(PInvoke.GetDpiForWindow(_hwnd));
         }
         finally
         {
@@ -437,12 +446,22 @@ internal sealed unsafe class PanelWindow
 
     #region Взаимодействие
 
-    int Scale(int logicalPx) => (int)(logicalPx * _dpi / 96.0);
+    /// <summary>Пересчёт кеша DPI-зависимых размеров (вызывается при смене DPI).</summary>
+    void SetDpi(uint dpi)
+    {
+        if (dpi == _dpi && _gripPx != 0)
+            return;
+        _dpi = dpi;
+        _gripPx = LayoutEngine.Scale(GripLogicalPx, dpi);
+        _headerPx = LayoutEngine.Scale(LayoutEngine.HeaderLogical, dpi);
+        _dragThresholdPx = LayoutEngine.Scale(8, dpi);
+        _repeatRadiusPx = LayoutEngine.Scale(16, dpi);
+        _wheelStepPx = LayoutEngine.Scale(60, dpi); // px за один щелчок колеса
+    }
 
     void Scroll(int wheelDelta)
     {
-        int step = LayoutEngine.Scale(60, _dpi); // px за один щелчок колеса
-        int offset = _scrollOffset + wheelDelta * step / 120;
+        int offset = _scrollOffset + wheelDelta * _wheelStepPx / 120;
 
         PInvoke.GetClientRect(_hwnd, out RECT client);
         int maxScroll = Math.Max(0, _layout.TotalHeight - (client.bottom - client.top));
@@ -474,12 +493,12 @@ internal sealed unsafe class PanelWindow
     void OnPress(int x, int y, bool ctrl)
     {
         // «Ручка» сверху или пустая зона — перетаскивание всей панели
-        if (y < LayoutEngine.Scale(LayoutEngine.HeaderLogical, _dpi) || HitTest(x, y) is not { } li)
+        if (y < _headerPx || HitTest(x, y) is not { } li)
         {
             CancelPendingActivation();
             _press = PressState.PanelDrag;
             PInvoke.SetCapture(_hwnd);
-            PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
+            PInvoke.SetCursor(SizeAllCursor);
             return;
         }
 
@@ -515,56 +534,56 @@ internal sealed unsafe class PanelWindow
         switch (_press)
         {
             case PressState.Pressed:
-                int threshold = Scale(8);
-                if (Math.Abs(x - _pressX) > threshold || Math.Abs(y - _pressY) > threshold)
+                if (Math.Abs(x - _pressX) > _dragThresholdPx || Math.Abs(y - _pressY) > _dragThresholdPx)
                 {
                     CancelHoverZoom();
                     CancelPendingActivation();
                     _press = PressState.Dragging;
-                    PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZENS));
+                    PInvoke.SetCursor(SizeNSCursor);
                     PInvoke.InvalidateRect(_hwnd, null, false); // подсветка таскаемого
                     DragTo(x, y);
                 }
                 break;
 
             case PressState.Dragging:
-                PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZENS));
+                PInvoke.SetCursor(SizeNSCursor);
                 DragTo(x, y);
                 break;
 
             case PressState.PanelDrag:
-                PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
+                PInvoke.SetCursor(SizeAllCursor);
                 break;
 
             case PressState.None:
+                // Один hit-test на движение — общий для лупы, pan и крестика
+                var over = HitTest(x, y);
                 if (ctrl)
                 {
                     ClearHoverCandidate();
-                    CtrlPan(x, y);
+                    CtrlPan(over, x, y);
                 }
                 else
                 {
-                    HoverZoomMove(x, y);
+                    HoverZoomMove(over, x, y);
                 }
-                UpdateCloseHover(x, y);
+                UpdateCloseHover(over, x, y);
                 break;
         }
     }
 
     /// <summary>
-    /// Hover-лупа: задержка над превью включает временный zoom ×3,
+    /// Hover-лупа: задержка над превью включает временный zoom,
     /// движение панорамирует, уход с превью — восстановление.
     /// </summary>
-    void HoverZoomMove(int x, int y)
+    void HoverZoomMove(LayoutItem? over, int x, int y)
     {
-        var over = HitTest(x, y);
         bool overPreview = over is { IsStrip: false } li && Inside(li.Preview, x, y);
 
         if (_hoverZoomItem is not null)
         {
             if (overPreview && over!.Value.Window == _hoverZoomItem)
             {
-                PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
+                PInvoke.SetCursor(SizeAllCursor);
                 SetCenterFromPoint(_hoverZoomItem, x, y);
             }
             else
@@ -611,7 +630,7 @@ internal sealed unsafe class PanelWindow
 
         // Лупа всегда ровно ×5, независимо от постоянного Ctrl-zoom
         candidate.Zoom = HoverZoomFactor;
-        PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
+        PInvoke.SetCursor(SizeAllCursor);
         SetCenterFromPoint(candidate, pt.X, pt.Y);
         PInvoke.InvalidateRect(_hwnd, null, false);
     }
@@ -638,10 +657,10 @@ internal sealed unsafe class PanelWindow
         }
     }
 
-    void UpdateCloseHover(int x, int y)
+    void UpdateCloseHover(LayoutItem? over, int x, int y)
     {
         WindowItem? hover = null;
-        if (HitTest(x, y) is { } li && Inside(LayoutEngine.CloseRect(li.Label), x, y))
+        if (over is { } li && Inside(LayoutEngine.CloseRect(li.Label), x, y))
             hover = li.Window;
 
         if (hover != _hoverClose)
@@ -650,17 +669,15 @@ internal sealed unsafe class PanelWindow
             PInvoke.InvalidateRect(_hwnd, null, false);
         }
 
-        if (hover is not null)
+        // Всегда: иначе WM_MOUSELEAVE не придёт, и hover-лупа или подсветка
+        // крестика «залипнут», когда мышь уйдёт с панели.
+        var tme = new TRACKMOUSEEVENT
         {
-            // Иначе не узнаем, что мышь ушла с панели, и крестик останется подсвеченным
-            var tme = new TRACKMOUSEEVENT
-            {
-                cbSize = (uint)sizeof(TRACKMOUSEEVENT),
-                dwFlags = TRACKMOUSEEVENT_FLAGS.TME_LEAVE,
-                hwndTrack = _hwnd,
-            };
-            PInvoke.TrackMouseEvent(ref tme);
-        }
+            cbSize = (uint)sizeof(TRACKMOUSEEVENT),
+            dwFlags = TRACKMOUSEEVENT_FLAGS.TME_LEAVE,
+            hwndTrack = _hwnd,
+        };
+        PInvoke.TrackMouseEvent(ref tme);
     }
 
     void DragTo(int x, int y)
@@ -669,8 +686,8 @@ internal sealed unsafe class PanelWindow
             return;
         if (HitTest(x, y) is not { } over || over.Window == _pressItem)
             return;
-        // Перетаскивание только внутри своей секции (активные / полоски)
-        if (over.Window.IsStrip != _pressItem.IsStrip)
+        // Перетаскивание только внутри своей секции (живые / свёрнутые)
+        if (over.Window.IsMinimized != _pressItem.IsMinimized)
             return;
         _tracker.Move(_pressItem, _tracker.IndexOf(over.Window));
     }
@@ -764,9 +781,9 @@ internal sealed unsafe class PanelWindow
             return;
         }
 
-        // Полоска: мгновенно оживить превью и переключиться. Второй клик двойного
-        // попадёт сюда же и ничего не изменит — одинарный и двойной эквивалентны.
-        _tracker.SetCollapsed(li.Window, false);
+        // Полоска: мгновенный restore + переключение (Activate сам делает
+        // SW_RESTORE). Второй клик двойного попадёт сюда же и ничего не
+        // изменит — одинарный и двойной эквивалентны.
         _switch.Activate(li.Window.Hwnd);
     }
 
@@ -784,8 +801,7 @@ internal sealed unsafe class PanelWindow
         int elapsed = Environment.TickCount - tick;
         if (elapsed < 0 || elapsed > (int)PInvoke.GetDoubleClickTime() + 150)
             return false;
-        int radius = Scale(16);
-        return Math.Abs(x - px) <= radius && Math.Abs(y - py) <= radius;
+        return Math.Abs(x - px) <= _repeatRadiusPx && Math.Abs(y - py) <= _repeatRadiusPx;
     }
 
     /// <summary>Ctrl+колесо над превью: постоянный zoom ×1..×5.</summary>
@@ -810,11 +826,11 @@ internal sealed unsafe class PanelWindow
     }
 
     /// <summary>Ctrl+движение мыши над увеличенным превью: центр видимой области.</summary>
-    void CtrlPan(int x, int y)
+    void CtrlPan(LayoutItem? over, int x, int y)
     {
-        if (HitTest(x, y) is not { IsStrip: false } li || li.Window.Zoom <= 1.001)
+        if (over is not { IsStrip: false } li || li.Window.Zoom <= 1.001)
             return;
-        PInvoke.SetCursor(PInvoke.LoadCursor(default, PInvoke.IDC_SIZEALL));
+        PInvoke.SetCursor(SizeAllCursor);
         SetCenterFromPoint(li.Window, x, y);
     }
 
@@ -829,10 +845,9 @@ internal sealed unsafe class PanelWindow
     bool IsInGrip(int clientX)
     {
         PInvoke.GetClientRect(_hwnd, out RECT rc);
-        int grip = Scale(GripLogicalPx);
         return _settings.Edge == DockEdge.Left
-            ? clientX >= rc.right - grip
-            : clientX <= grip;
+            ? clientX >= rc.right - _gripPx
+            : clientX <= _gripPx;
     }
 
     void ShowContextMenu()

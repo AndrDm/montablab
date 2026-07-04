@@ -16,6 +16,7 @@ internal sealed unsafe class ThumbnailManager(HWND panel) : IDisposable
     readonly HWND _panel = panel;
     readonly Dictionary<HWND, ThumbState> _thumbs = [];
     readonly HashSet<HWND> _wanted = [];
+    readonly List<HWND> _stale = [];
 
     struct ThumbState
     {
@@ -84,19 +85,16 @@ internal sealed unsafe class ThumbnailManager(HWND panel) : IDisposable
         }
 
         // Всё, что больше не нужно (полоска, за экраном, окно закрыто) — снять.
-        List<HWND>? stale = null;
+        _stale.Clear();
         foreach (var (hwnd, state) in _thumbs)
         {
             if (_wanted.Contains(hwnd))
                 continue;
             PInvoke.DwmUnregisterThumbnail(state.Thumb);
-            (stale ??= []).Add(hwnd);
+            _stale.Add(hwnd);
         }
-        if (stale is not null)
-        {
-            foreach (var hwnd in stale)
-                _thumbs.Remove(hwnd);
-        }
+        foreach (var hwnd in _stale)
+            _thumbs.Remove(hwnd);
     }
 
     /// <summary>

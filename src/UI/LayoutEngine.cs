@@ -7,7 +7,8 @@ internal readonly record struct LayoutItem(WindowItem Window, RECT Bounds, RECT 
 
 /// <summary>
 /// Раскладка ленты: живые тайлы (превью по аспекту окна-источника + подпись)
-/// и полоски (свёрнутые/погашенные). Все размеры — логические px × DPI.
+/// и полоски свёрнутых окон. Все размеры предвычисляются на текущий DPI,
+/// список раскладки переиспользуется между кадрами (ноль аллокаций в кадре).
 /// </summary>
 internal sealed class LayoutEngine
 {
@@ -21,54 +22,67 @@ internal sealed class LayoutEngine
     const int MinPreviewHeightLogical = 48;
     const double MaxPreviewHeightFactor = 1.6; // не выше 1.6 ширины (очень «портретные» окна)
 
+    readonly List<LayoutItem> _result = [];
+
+    // Предвычисленные размеры на текущий DPI
+    uint _dpi;
+    int _header, _strip, _label, _gap, _padding, _minPreview;
+
     public int TotalHeight { get; private set; }
 
-    public List<LayoutItem> Compute(IReadOnlyList<WindowItem> items, RECT client, uint dpi, int scrollOffset)
+    public IReadOnlyList<LayoutItem> Compute(IReadOnlyList<WindowItem> items, RECT client, uint dpi, int scrollOffset)
     {
-        // C# 15: аргументы конструктора в collection expression
-        List<LayoutItem> result = [with(capacity: items.Count)];
+        SetDpi(dpi);
+        _result.Clear();
 
-        int gap = Scale(GapLogical, dpi);
-        int padding = Scale(PaddingLogical, dpi);
-        int stripHeight = Scale(StripHeightLogical, dpi);
-        int labelHeight = Scale(LabelHeightLogical, dpi);
-        int minPreview = Scale(MinPreviewHeightLogical, dpi);
-
-        int width = client.right - client.left - 2 * padding;
+        int width = client.right - client.left - 2 * _padding;
         if (width <= 0)
-            return result;
+            return _result;
 
-        int left = client.left + padding;
-        int y = Scale(HeaderLogical, dpi) + padding - scrollOffset;
+        int left = client.left + _padding;
+        int y = _header + _padding - scrollOffset;
 
         foreach (var item in items)
         {
-            bool isStrip = item.IsStrip;
+            bool isStrip = item.IsMinimized;
             RECT bounds, preview = default, label;
 
             if (isStrip)
             {
-                bounds = new RECT { left = left, top = y, right = left + width, bottom = y + stripHeight };
+                bounds = new RECT { left = left, top = y, right = left + width, bottom = y + _strip };
                 label = bounds;
             }
             else
             {
                 double aspect = item.Aspect > 0.05 ? item.Aspect : 16.0 / 10.0;
                 int previewHeight = Math.Clamp(
-                    (int)Math.Round(width / aspect), minPreview, (int)(width * MaxPreviewHeightFactor));
+                    (int)Math.Round(width / aspect), _minPreview, (int)(width * MaxPreviewHeightFactor));
 
                 // Заголовок сверху, превью под ним
-                bounds = new RECT { left = left, top = y, right = left + width, bottom = y + labelHeight + previewHeight };
-                label = new RECT { left = left, top = y, right = left + width, bottom = y + labelHeight };
-                preview = new RECT { left = left, top = y + labelHeight, right = left + width, bottom = bounds.bottom };
+                bounds = new RECT { left = left, top = y, right = left + width, bottom = y + _label + previewHeight };
+                label = new RECT { left = left, top = y, right = left + width, bottom = y + _label };
+                preview = new RECT { left = left, top = y + _label, right = left + width, bottom = bounds.bottom };
             }
 
-            result.Add(new LayoutItem(item, bounds, preview, label, isStrip));
-            y = bounds.bottom + gap;
+            _result.Add(new LayoutItem(item, bounds, preview, label, isStrip));
+            y = bounds.bottom + _gap;
         }
 
-        TotalHeight = y + scrollOffset + padding - (items.Count > 0 ? gap : 0);
-        return result;
+        TotalHeight = y + scrollOffset + _padding - (items.Count > 0 ? _gap : 0);
+        return _result;
+    }
+
+    void SetDpi(uint dpi)
+    {
+        if (dpi == _dpi)
+            return;
+        _dpi = dpi;
+        _header = Scale(HeaderLogical, dpi);
+        _strip = Scale(StripHeightLogical, dpi);
+        _label = Scale(LabelHeightLogical, dpi);
+        _gap = Scale(GapLogical, dpi);
+        _padding = Scale(PaddingLogical, dpi);
+        _minPreview = Scale(MinPreviewHeightLogical, dpi);
     }
 
     /// <summary>
