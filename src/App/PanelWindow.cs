@@ -642,6 +642,9 @@ internal sealed unsafe class PanelWindow
             return;
         if (HitTest(x, y) is not { } over || over.Window == _pressItem)
             return;
+        // Перетаскивание только внутри своей секции (активные / полоски)
+        if (over.Window.IsStrip != _pressItem.IsStrip)
+            return;
         _tracker.Move(_pressItem, _tracker.IndexOf(over.Window));
     }
 
@@ -740,10 +743,7 @@ internal sealed unsafe class PanelWindow
             return;
 
         if (li.IsStrip || Inside(li.Label, x, y))
-        {
-            li.Window.IsCollapsed = !li.Window.IsCollapsed;
-            PInvoke.InvalidateRect(_hwnd, null, false);
-        }
+            _tracker.ToggleCollapsed(li.Window);
     }
 
     /// <summary>Ctrl+колесо над превью: постоянный zoom ×1..×5.</summary>

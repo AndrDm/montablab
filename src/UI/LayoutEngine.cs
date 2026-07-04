@@ -42,7 +42,7 @@ internal sealed class LayoutEngine
 
         foreach (var item in items)
         {
-            bool isStrip = item.IsMinimized || item.IsCollapsed;
+            bool isStrip = item.IsStrip;
             RECT bounds, preview = default, label;
 
             if (isStrip)

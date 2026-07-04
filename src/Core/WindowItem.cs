@@ -15,6 +15,9 @@ internal sealed class WindowItem
     /// <summary>Погашено пользователем: окно живо, но превью отключено (полоска).</summary>
     public bool IsCollapsed;
 
+    /// <summary>Полоска (нижняя секция ленты) — свёрнуто или погашено.</summary>
+    public bool IsStrip => IsMinimized || IsCollapsed;
+
     /// <summary>Соотношение сторон клиентской области источника (w/h).</summary>
     public double Aspect = 16.0 / 10.0;
 
