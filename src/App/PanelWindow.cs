@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Montab.Config;
+using Montab.Core;
+using Montab.UI;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Gdi;
@@ -26,6 +28,12 @@ internal sealed unsafe class PanelWindow
     static readonly List<HMONITOR> s_monitorScratch = [];
 
     readonly Settings _settings;
+    readonly WindowTracker _tracker = new();
+    readonly LayoutEngine _layout = new();
+    readonly Renderer _renderer = new();
+    List<LayoutItem> _layoutItems = [];
+    int _scrollOffset;
+
     HWND _hwnd;
     AppBar? _appBar;
     uint _dpi = 96;
@@ -73,7 +81,12 @@ internal sealed unsafe class PanelWindow
         _appBar.Register();
         UpdatePosition();
         PInvoke.ShowWindow(_hwnd, SHOW_WINDOW_CMD.SW_SHOWNOACTIVATE);
+
+        _tracker.Changed += OnTrackerChanged;
+        _tracker.Start();
     }
+
+    void OnTrackerChanged() => PInvoke.InvalidateRect(_hwnd, null, false);
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     static LRESULT StaticWndProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam)
@@ -102,6 +115,15 @@ internal sealed unsafe class PanelWindow
 
         switch (msg)
         {
+            case PInvoke.WM_PAINT:
+                PInvoke.GetClientRect(hwnd, out RECT client);
+                _layoutItems = _layout.Compute(_tracker.Items, client, _dpi, _scrollOffset);
+                _renderer.Paint(hwnd, _layoutItems, _tracker.ForegroundWindow, _dpi);
+                return new LRESULT(0);
+
+            case PInvoke.WM_ERASEBKGND:
+                return new LRESULT(1); // всё рисуется в WM_PAINT с двойным буфером
+
             case PInvoke.WM_SETCURSOR:
                 if ((lParam.Value & 0xFFFF) == PInvoke.HTCLIENT && IsInGrip(GetCursorClientPos().X))
                 {
@@ -160,6 +182,8 @@ internal sealed unsafe class PanelWindow
                 return new LRESULT(0);
 
             case PInvoke.WM_DESTROY:
+                _tracker.Dispose();
+                _renderer.Dispose();
                 _appBar?.Unregister();
                 _settings.Save();
                 PInvoke.PostQuitMessage(0);
