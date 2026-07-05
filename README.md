@@ -1,4 +1,6 @@
-# montab
+# montablab (forked from montab)
+
+Switched back to net10.0-windows
 
 **EN** | [RU](README_RU.md)
 
