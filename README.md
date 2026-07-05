@@ -2,6 +2,8 @@
 
 Switched back to net10.0-windows
 
+05.Jul 2026: + Optional Scroll Bar -> 1.1.0
+
 **EN** | [RU](README_RU.md)
 
 A Windows sidebar taskbar with **always-on live previews** of every open
