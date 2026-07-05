@@ -24,8 +24,10 @@ internal sealed unsafe class PanelWindow
 
     const uint CmdDockLeft = 1;
     const uint CmdDockRight = 2;
-    const uint CmdExit = 3;
-    const uint CmdAutostart = 4;
+	const uint CmdScrollBar = 3;
+    const uint CmdExit = 4;
+    const uint CmdAutostart = 5;
+	
 
     const string AutostartRunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
     const string AutostartValue = "montab";
@@ -85,6 +87,12 @@ internal sealed unsafe class PanelWindow
     WindowItem? _hoverZoomItem;
     WindowItem? _hoverCandidate;
     double _savedZoom = 1, _savedCenterX = 0.5, _savedCenterY = 0.5;
+
+	// Scroll Bar
+	bool _scrollbarDragging;
+	int _scrollbarDragStartY;
+	int _scrollOffsetStart;
+
 
     public PanelWindow(Settings settings) => _settings = settings;
 
@@ -188,9 +196,17 @@ internal sealed unsafe class PanelWindow
                     _layoutItems = _layout.Compute(_tracker.Items, client, _dpi, _scrollOffset);
                 }
                 _thumbs?.Sync(_layoutItems, client, _tracker.ForegroundWindow);
-                _renderer.Paint(hwnd, _layoutItems, _tracker.ForegroundWindow, _dpi, _hoverClose,
-                    _press == PressState.Dragging ? _pressItem : null);
-                return new LRESULT(0);
+               _renderer.Paint(
+    				hwnd,
+    				_layoutItems,
+    				_tracker.ForegroundWindow,
+    				_dpi,
+    				_hoverClose,
+    				_press == PressState.Dragging ? _pressItem : null,
+    				_settings.ScrollBar ? _scrollOffset : null,
+    				_settings.ScrollBar ? _layout.TotalHeight : null
+				);
+ 				return new LRESULT(0);
 
             case PInvoke.WM_MOUSEWHEEL:
                 int delta = (short)((wParam.Value >> 16) & 0xFFFF);
@@ -230,6 +246,15 @@ internal sealed unsafe class PanelWindow
                 break;
 
             case PInvoke.WM_LBUTTONDOWN:
+				if (_settings.ScrollBar && IsInScrollBar(GetXLParam(lParam)))
+				{
+    				_scrollbarDragging = true;
+    				_scrollbarDragStartY = GetYLParam(lParam);
+    				_scrollOffsetStart = _scrollOffset;
+    				PInvoke.SetCapture(hwnd);
+    				return new LRESULT(0);
+				}
+
                 if (IsInGrip(GetXLParam(lParam)))
                 {
                     _resizing = true;
@@ -240,6 +265,29 @@ internal sealed unsafe class PanelWindow
                 return new LRESULT(0);
 
             case PInvoke.WM_MOUSEMOVE:
+				if (_scrollbarDragging)
+				{
+    				PInvoke.GetClientRect(_hwnd, out RECT client_);
+
+    				int dy = GetYLParam(lParam) - _scrollbarDragStartY;
+
+    				int viewHeight = client_.bottom - client_.top;
+    				int totalHeight = _layout.TotalHeight;
+
+    				int maxScroll_ = Math.Max(0, totalHeight - viewHeight);
+    				if (maxScroll_ <= 0)
+        				return new LRESULT(0);
+
+    				int thumbMin = LayoutEngine.Scale(20, _dpi);
+    				int trackHeight = viewHeight - thumbMin;
+    				double ratio = maxScroll_ / (double)trackHeight;
+
+    				_scrollOffset = Math.Clamp(_scrollOffsetStart + (int)(dy * ratio), 0, maxScroll_);
+
+    				PInvoke.InvalidateRect(_hwnd, null, false);
+    				return new LRESULT(0);
+				}
+
                 if (_resizing)
                 {
                     PInvoke.GetCursorPos(out System.Drawing.Point screen);
@@ -250,6 +298,13 @@ internal sealed unsafe class PanelWindow
                 break;
 
             case PInvoke.WM_LBUTTONUP:
+				if (_scrollbarDragging)
+				{
+    				_scrollbarDragging = false;
+    				PInvoke.ReleaseCapture();
+    				return new LRESULT(0);
+				}
+
                 if (_swallowNextUp)
                 {
                     // Отпускание второго клика двойного — жест уже обработан на DOWN
@@ -860,10 +915,17 @@ internal sealed unsafe class PanelWindow
         {
             var left = MENU_ITEM_FLAGS.MF_STRING | (_settings.Edge == DockEdge.Left ? MENU_ITEM_FLAGS.MF_CHECKED : 0);
             var right = MENU_ITEM_FLAGS.MF_STRING | (_settings.Edge == DockEdge.Right ? MENU_ITEM_FLAGS.MF_CHECKED : 0);
+            //var scroll = MENU_ITEM_FLAGS.MF_STRING | (_settings.Edge == DockEdge.ScrollBar ? MENU_ITEM_FLAGS.MF_CHECKED : 0);
             var autostart = MENU_ITEM_FLAGS.MF_STRING | (IsAutostartEnabled() ? MENU_ITEM_FLAGS.MF_CHECKED : 0);
             PInvoke.AppendMenu(menu, left, CmdDockLeft, Strings.DockLeft);
             PInvoke.AppendMenu(menu, right, CmdDockRight, Strings.DockRight);
-            PInvoke.AppendMenu(menu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
+            PInvoke.AppendMenu(
+    			menu,
+    			MENU_ITEM_FLAGS.MF_STRING,
+    			CmdScrollBar,
+    			_settings.ScrollBar ? "Hide scrollbar" : "Show scrollbar"
+			);
+			PInvoke.AppendMenu(menu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
             PInvoke.AppendMenu(menu, autostart, CmdAutostart, Strings.Autostart);
             PInvoke.AppendMenu(menu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
             PInvoke.AppendMenu(menu, MENU_ITEM_FLAGS.MF_STRING, CmdExit, Strings.Exit);
@@ -884,6 +946,11 @@ internal sealed unsafe class PanelWindow
                 case CmdDockRight:
                     SetEdge(DockEdge.Right);
                     break;
+				case CmdScrollBar:
+    				_settings.ScrollBar = !_settings.ScrollBar;
+    				_settings.Save();
+    				PInvoke.InvalidateRect(_hwnd, null, false);
+   					break;
                 case CmdAutostart:
                     ToggleAutostart();
                     break;
@@ -921,6 +988,15 @@ internal sealed unsafe class PanelWindow
         UpdatePosition();
         _settings.Save();
     }
+
+	// Scroll Bar
+	bool IsInScrollBar(int x)
+	{
+    	PInvoke.GetClientRect(_hwnd, out RECT client);
+    	int barWidth = LayoutEngine.Scale(8, _dpi);
+    	return x >= client.right - barWidth;
+	}
+
 
     #endregion
 }

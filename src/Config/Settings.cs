@@ -12,6 +12,7 @@ internal enum DockEdge
 internal sealed class Settings
 {
     public DockEdge Edge { get; set; } = DockEdge.Right;
+	public bool ScrollBar { get; set; } = false;
     public double WidthPercent { get; set; } = 10;
     public string? Monitor { get; set; }
 

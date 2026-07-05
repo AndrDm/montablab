@@ -32,6 +32,13 @@ internal sealed unsafe class Renderer : IDisposable
     readonly HBRUSH _dragFillBrush = PInvoke.CreateSolidBrush(new COLORREF(0x004A4A4A));
     readonly HBRUSH _dragFrameBrush = PInvoke.CreateSolidBrush(new COLORREF(0x00909090));
 
+public static readonly HBRUSH BrushScrollbarTrack =
+    PInvoke.CreateSolidBrush(new COLORREF(0x202020));
+
+public static readonly HBRUSH BrushScrollbarThumb =
+    PInvoke.CreateSolidBrush(new COLORREF(0x606060));
+
+
     // Кеш на текущий DPI
     uint _dpi;
     HFONT _font;
@@ -43,9 +50,26 @@ internal sealed unsafe class Renderer : IDisposable
     HGDIOBJ _memOldBmp;
     int _bufWidth, _bufHeight;
 
-    public void Paint(HWND hwnd, IReadOnlyList<LayoutItem> layout, HWND activeWindow, uint dpi,
-        WindowItem? hoverClose = null, WindowItem? dragged = null)
-    {
+/*
+    public void Paint(HWND hwnd, 
+		IReadOnlyList<LayoutItem> layout, 
+		HWND activeWindow, 
+		uint dpi,
+        WindowItem? hoverClose = null, 
+		WindowItem? dragged = null)
+
+*/
+
+public void Paint(
+    HWND hwnd,
+    IReadOnlyList<LayoutItem> layout,
+    HWND activeWindow,
+    uint dpi,
+    WindowItem? hoverClose,
+    WindowItem? dragged,
+    int? scrollOffset,
+    int? totalHeight)
+{
         SetDpi(dpi);
 
         HDC hdc = PInvoke.BeginPaint(hwnd, out PAINTSTRUCT ps);
@@ -57,7 +81,8 @@ internal sealed unsafe class Renderer : IDisposable
             if (width <= 0 || height <= 0)
                 return;
 
-            EnsureBackbuffer(hdc, width, height);
+
+			EnsureBackbuffer(hdc, width, height);
             PInvoke.SelectObject(_memDc, (HGDIOBJ)_font.Value);
 
             PInvoke.FillRect(_memDc, in client, _bgBrush);
@@ -77,6 +102,9 @@ internal sealed unsafe class Renderer : IDisposable
                 DrawLabel(li, isActive, li.Window == hoverClose, isDragged);
             }
 
+            if (scrollOffset.HasValue && totalHeight.HasValue)
+				DrawScrollBar(_memDc, client, dpi, scrollOffset.Value, totalHeight.Value);
+
             PInvoke.BitBlt(hdc, 0, 0, width, height, _memDc, 0, 0, ROP_CODE.SRCCOPY);
         }
         finally
@@ -84,6 +112,42 @@ internal sealed unsafe class Renderer : IDisposable
             PInvoke.EndPaint(hwnd, in ps);
         }
     }
+
+
+void DrawScrollBar(HDC memDc, RECT client, uint dpi, int scrollOffset, int totalHeight)
+{
+    int viewHeight = client.bottom - client.top;
+    if (totalHeight <= viewHeight)
+        return;
+
+    int barWidth = LayoutEngine.Scale(12, dpi); // Scroll Bar Width, hard coded for the moment 
+    int trackHeight = viewHeight;
+
+    double ratio = viewHeight / (double)totalHeight;
+    int thumbHeight = Math.Max(LayoutEngine.Scale(40, dpi), (int)(trackHeight * ratio));
+
+    int maxScroll = totalHeight - viewHeight;
+    double scrollRatio = scrollOffset / (double)maxScroll;
+    int thumbTop = (int)((trackHeight - thumbHeight) * scrollRatio);
+
+    // TRACK
+    PInvoke.FillRect(memDc, new RECT
+    {
+        left = client.right - barWidth,
+        top = client.top,
+        right = client.right,
+        bottom = client.bottom
+    }, BrushScrollbarTrack);
+
+    // THUMB
+    PInvoke.FillRect(memDc, new RECT
+    {
+        left = client.right - barWidth,
+        top = client.top + thumbTop,
+        right = client.right,
+        bottom = client.top + thumbTop + thumbHeight
+    }, BrushScrollbarThumb);
+}
 
     /// <summary>Гриппер-«ручка» сверху: за неё панель перетаскивают на другой монитор/край.</summary>
     void DrawHeaderGrip(RECT client)
