@@ -2,7 +2,11 @@
 
 Switched back to net10.0-windows
 
+![](assets/thumb.gif)
+
 05.Jul 2026: + Optional Scroll Bar -> 1.1.0
+
+![](assets/scroll2.gif)
 
 **EN** | [RU](README_RU.md)
 
